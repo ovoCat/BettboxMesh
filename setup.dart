@@ -1,0 +1,1301 @@
+// ignore_for_file: avoid_print
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:args/command_runner.dart';
+import 'package:crypto/crypto.dart';
+import 'package:path/path.dart';
+
+enum Target { windows, linux, android, macos }
+
+extension TargetExt on Target {
+  String get os {
+    if (this == Target.macos) {
+      return 'darwin';
+    }
+    return name;
+  }
+
+  bool get same {
+    if (this == Target.android) {
+      return true;
+    }
+    if (Platform.isWindows && this == Target.windows) {
+      return true;
+    }
+    if (Platform.isLinux && this == Target.linux) {
+      return true;
+    }
+    if (Platform.isMacOS && this == Target.macos) {
+      return true;
+    }
+    return false;
+  }
+
+  String get dynamicLibExtensionName {
+    final String extensionName;
+    switch (this) {
+      case Target.android || Target.linux:
+        extensionName = '.so';
+        break;
+      case Target.windows:
+        extensionName = '.dll';
+        break;
+      case Target.macos:
+        extensionName = '.dylib';
+        break;
+    }
+    return extensionName;
+  }
+
+  String get executableExtensionName {
+    final String extensionName;
+    switch (this) {
+      case Target.windows:
+        extensionName = '.exe';
+        break;
+      default:
+        extensionName = '';
+        break;
+    }
+    return extensionName;
+  }
+}
+
+enum Mode { core, lib }
+
+enum Arch { amd64, arm64, arm }
+
+class BuildItem {
+  Target target;
+  Arch? arch;
+  String? archName;
+
+  BuildItem({required this.target, this.arch, this.archName});
+
+  @override
+  String toString() {
+    return 'BuildLibItem{target: $target, arch: $arch, archName: $archName}';
+  }
+}
+
+class Build {
+  static bool isDev = false;
+
+  static String get identityName => isDev ? '${appName}Dev' : appName;
+
+  static List<BuildItem> get buildItems => [
+    BuildItem(target: Target.macos, arch: Arch.arm64),
+    BuildItem(target: Target.macos, arch: Arch.amd64),
+    BuildItem(target: Target.linux, arch: Arch.arm64),
+    BuildItem(target: Target.linux, arch: Arch.amd64),
+    BuildItem(target: Target.windows, arch: Arch.amd64),
+    BuildItem(target: Target.windows, arch: Arch.arm64),
+    BuildItem(target: Target.android, arch: Arch.arm, archName: 'armeabi-v7a'),
+    BuildItem(target: Target.android, arch: Arch.arm64, archName: 'arm64-v8a'),
+    BuildItem(target: Target.android, arch: Arch.amd64, archName: 'x86_64'),
+  ];
+
+  static String get appName => 'Bettbox';
+
+  static String get coreName => '${identityName}Core';
+
+  static String get helperName => '${identityName}HelperService';
+
+  static String get libName => 'libmeta';
+
+  static String get outDir => join(current, 'libclash');
+
+  static String get _coreDir => join(current, 'core');
+
+  static String get _servicesDir => join(current, 'services', 'helper');
+
+  static String get distPath => join(current, 'dist');
+
+  static String _getCc(BuildItem buildItem) {
+    final environment = Platform.environment;
+    if (buildItem.target == Target.android) {
+      final ndk = environment['ANDROID_NDK'];
+      assert(ndk != null);
+      final prebuiltDir = Directory(
+        join(ndk!, 'toolchains', 'llvm', 'prebuilt'),
+      );
+      final prebuiltDirList = prebuiltDir.listSync();
+      final map = {
+        'armeabi-v7a': 'armv7a-linux-androideabi21-clang',
+        'arm64-v8a': 'aarch64-linux-android21-clang',
+        'x86': 'i686-linux-android21-clang',
+        'x86_64': 'x86_64-linux-android21-clang',
+      };
+      return join(prebuiltDirList.first.path, 'bin', map[buildItem.archName]);
+    }
+    return 'gcc';
+  }
+
+  static String getTags(BuildItem buildItem, {bool standard = false}) {
+    if (!standard) {
+      return 'no_easytier,no_tailscale,no_zerotier,no_fake_tcp,with_low_memory';
+    }
+    final baseTags = 'with_gvisor';
+    if (buildItem.target == Target.android &&
+        buildItem.archName == 'armeabi-v7a') {
+      return '$baseTags,with_low_memory';
+    }
+    return baseTags;
+  }
+
+  static String tagsMarkerPath(BuildItem buildItem) => join(
+    outDir,
+    '.tags',
+    '${buildItem.target.name}-${buildItem.archName ?? buildItem.arch?.name}',
+  );
+
+  static Future<void> exec(
+    List<String> executable, {
+    String? name,
+    Map<String, String>? environment,
+    String? workingDirectory,
+    bool runInShell = true,
+  }) async {
+    if (name != null) print('run $name');
+    final process = await Process.start(
+      executable[0],
+      executable.sublist(1),
+      environment: environment,
+      workingDirectory: workingDirectory,
+      runInShell: runInShell,
+    );
+    process.stdout.listen((data) {
+      print(utf8.decode(data));
+    });
+    process.stderr.listen((data) {
+      print(utf8.decode(data));
+    });
+    final exitCode = await process.exitCode;
+    if (exitCode != 0 && name != null) throw '$name error';
+  }
+
+  static Future<String> calcSha256(String filePath) async {
+    final file = File(filePath);
+    if (!await file.exists()) {
+      throw 'File not exists';
+    }
+    final digest = await sha256.bind(file.openRead()).first;
+    return digest.toString();
+  }
+
+  static Future<String> resolveCoreVersion({String? explicitVersion}) async {
+    final explicit = explicitVersion?.trim();
+    if (explicit != null && explicit.isNotEmpty) {
+      return explicit;
+    }
+
+    final envVersion = Platform.environment['CORE_VERSION']?.trim();
+    if (envVersion != null && envVersion.isNotEmpty) {
+      return envVersion;
+    }
+
+    try {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 3);
+      final request = await client.getUrl(
+        Uri.parse('https://github.com/MetaCubeX/mihomo/releases/latest'),
+      );
+      request.followRedirects = false;
+      final response = await request.close().timeout(
+        const Duration(seconds: 3),
+      );
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      client.close(force: true);
+      if (location != null) {
+        final tag = Uri.parse(location).pathSegments.last.trim();
+        if (tag.isNotEmpty) {
+          return tag;
+        }
+      }
+    } catch (_) {}
+
+    return 'alpha';
+  }
+
+  static Future<List<String>> buildCore({
+    required Mode mode,
+    required Target target,
+    Arch? arch,
+    bool compatible = false,
+    bool standard = false,
+    String? coreVersion,
+  }) async {
+    final isLib = mode == Mode.lib;
+    final resolvedVersion = await resolveCoreVersion(
+      explicitVersion: coreVersion,
+    );
+
+    final items = buildItems.where((element) {
+      return element.target == target &&
+          (arch == null ? true : element.arch == arch);
+    }).toList();
+
+    final List<String> corePaths = [];
+
+    for (final item in items) {
+      final outFileDir = join(outDir, item.target.name, item.archName);
+
+      final file = File(outFileDir);
+      if (file.existsSync()) {
+        file.deleteSync(recursive: true);
+      }
+
+      final fileName = isLib
+          ? '$libName${item.target.dynamicLibExtensionName}'
+          : '$coreName${item.target.executableExtensionName}';
+      final outPath = join(outFileDir, fileName);
+      corePaths.add(outPath);
+
+      final Map<String, String> env = {};
+      env['GOOS'] = item.target.os;
+      if (item.arch != null) {
+        env['GOARCH'] = item.arch!.name;
+      }
+      if (item.arch == Arch.amd64 && item.target == Target.macos) {
+        env['GOAMD64'] = 'v1';
+      } else if (item.arch == Arch.amd64 &&
+          (item.target == Target.windows || item.target == Target.linux)) {
+        env['GOAMD64'] = compatible ? 'v1' : 'v3';
+      }
+      if (isLib) {
+        env['CGO_ENABLED'] = '1';
+        env['CC'] = _getCc(item);
+        env['CFLAGS'] = '-O3 -Werror';
+      } else {
+        env['CGO_ENABLED'] = '0';
+      }
+
+      final buildTags = getTags(item, standard: standard);
+
+      await exec(
+        ['go', 'mod', 'tidy'],
+        name: 'go mod tidy',
+        environment: env,
+        workingDirectory: _coreDir,
+      );
+
+      final ldflags = [
+        '-w',
+        '-s',
+        '-X github.com/metacubex/mihomo/constant.Version=$resolvedVersion',
+        if (item.target == Target.android &&
+            (item.arch == Arch.arm64 || item.arch == Arch.amd64))
+          '-extldflags "-Wl,-z,max-page-size=16384"',
+      ].join(' ');
+
+      final execLines = [
+        'go',
+        'build',
+        '-trimpath',
+        '-ldflags=$ldflags',
+        '-tags=$buildTags',
+        if (isLib) '-buildmode=c-shared',
+        '-o',
+        outPath,
+      ];
+      await exec(
+        execLines,
+        name: 'build core',
+        environment: env,
+        workingDirectory: _coreDir,
+      );
+      final marker = File(tagsMarkerPath(item));
+      marker.parent.createSync(recursive: true);
+      marker.writeAsStringSync(buildTags);
+    }
+
+    return corePaths;
+  }
+
+  static Future<void> buildHelper(Target target, String token) async {
+    await exec(
+      ['cargo', 'build', '--release', '--features', 'windows-service'],
+      environment: {'TOKEN': token},
+      name: 'build helper',
+      workingDirectory: _servicesDir,
+    );
+    final outPath = join(
+      _servicesDir,
+      'target',
+      'release',
+      'helper${target.executableExtensionName}',
+    );
+    final targetPath = join(
+      Build.outDir,
+      target.name,
+      '${Build.helperName}${target.executableExtensionName}',
+    );
+    await _replaceFile(File(outPath), targetPath);
+  }
+
+  static Future<void> _replaceFile(File source, String destinationPath) async {
+    final staleFile = File('$destinationPath.old');
+    if (staleFile.existsSync()) {
+      try {
+        staleFile.deleteSync();
+      } catch (_) {}
+    }
+
+    try {
+      await source.copy(destinationPath);
+    } on PathExistsException catch (e) {
+      if (!Platform.isWindows || !File(destinationPath).existsSync()) {
+        rethrow;
+      }
+      print(
+        'Cannot replace $destinationPath (${e.osError?.message ?? e.message}), '
+        'renaming the running binary aside and retrying.',
+      );
+      await File(destinationPath).rename(staleFile.path);
+      await source.copy(destinationPath);
+    }
+
+    File(destinationPath).setLastModifiedSync(DateTime.now());
+
+    if (staleFile.existsSync()) {
+      try {
+        staleFile.deleteSync();
+      } catch (_) {}
+    }
+  }
+
+  static List<String> getExecutable(String command) {
+    return command.split(' ');
+  }
+
+  static Future<void> getDistributor() async {
+    final distributorDir = join(
+      current,
+      'plugins',
+      'flutter_distributor',
+      'packages',
+      'flutter_distributor',
+    );
+
+    await exec(
+      name: 'clean distributor',
+      Build.getExecutable('flutter clean'),
+      workingDirectory: distributorDir,
+    );
+    await exec(
+      name: 'upgrade distributor',
+      Build.getExecutable('flutter pub upgrade'),
+      workingDirectory: distributorDir,
+    );
+    await exec(
+      name: 'get distributor',
+      Build.getExecutable('dart pub global activate -s path $distributorDir'),
+    );
+  }
+
+  static void copyFile(String sourceFilePath, String destinationFilePath) {
+    final sourceFile = File(sourceFilePath);
+    if (!sourceFile.existsSync()) {
+      throw 'SourceFilePath not exists';
+    }
+    final destinationFile = File(destinationFilePath);
+    final destinationDirectory = destinationFile.parent;
+    if (!destinationDirectory.existsSync()) {
+      destinationDirectory.createSync(recursive: true);
+    }
+    try {
+      sourceFile.copySync(destinationFilePath);
+      print('File copied successfully!');
+    } catch (e) {
+      print('Failed to copy file: $e');
+    }
+  }
+
+  static const List<AssetDownloadItem> assetDownloadItems = [
+    AssetDownloadItem(
+      url: 'https://github.com/appshubcc/bett-rules/releases/download/latest/geosite.dat',
+      fileName: 'GeoSite.dat',
+    ),
+    AssetDownloadItem(
+      url: 'https://github.com/appshubcc/bett-rules/releases/download/latest/geoip.metadb',
+      fileName: 'geoip.metadb',
+    ),
+    AssetDownloadItem(
+      url: 'https://github.com/appshubcc/bett-rules/releases/download/latest/GeoLite2-ASN-lite.mmdb',
+      fileName: 'ASN.mmdb',
+    ),
+    AssetDownloadItem(
+      url: 'https://github.com/appshubcc/bett-rules/releases/download/latest/BundleMRS.7z',
+      fileName: 'BundleMRS.7z',
+    ),
+    AssetDownloadItem(
+      url: 'https://github.com/Zephyruso/zashboard/releases/download/v3.29.1/dist-no-fonts.zip',
+      fileName: 'zash.zip',
+    ),
+  ];
+
+  static Future<void> ensureAssets({bool force = false}) async {
+    final dataDir = Directory(join(current, 'assets', 'data'));
+    if (!dataDir.existsSync()) {
+      dataDir.createSync(recursive: true);
+    }
+
+    final now = DateTime.now();
+    final maxAge = const Duration(hours: 48);
+
+    for (final item in assetDownloadItems) {
+      final targetFile = File(join(dataDir.path, item.fileName));
+      var shouldDownload = force;
+
+      if (!shouldDownload) {
+        if (!targetFile.existsSync() || targetFile.lengthSync() == 0) {
+          shouldDownload = true;
+        } else {
+          final lastModified = targetFile.lastModifiedSync();
+          final age = now.difference(lastModified);
+          if (age >= maxAge) {
+            shouldDownload = true;
+          }
+        }
+      }
+
+      if (shouldDownload) {
+        print('Downloading ${item.fileName} from ${item.url} ...');
+        await _downloadAsset(item.url, targetFile.path);
+        print('Downloaded ${item.fileName} successfully.');
+      } else {
+        final ageHours = now.difference(targetFile.lastModifiedSync()).inHours;
+        print('${item.fileName} is up to date (${ageHours}h < 48h).');
+      }
+    }
+    await _syncTelegramCidrs(force: force, maxAge: maxAge);
+  }
+
+  static const _telegramCidrsUrl =
+      'https://raw.githubusercontent.com/appshubcc/bett-rules/meta/geo/geoip/telegram.list';
+
+  static Future<void> _syncTelegramCidrs({
+    required bool force,
+    required Duration maxAge,
+  }) async {
+    final file = File(join(current, 'lib', 'common', 'telegram_cidrs.dart'));
+    if (!force && file.existsSync()) {
+      final age = DateTime.now().difference(file.lastModifiedSync());
+      if (age < maxAge) {
+        print('telegram_cidrs.dart is up to date (${age.inHours}h < 48h).');
+        return;
+      }
+    }
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 30);
+    try {
+      final request = await client.getUrl(Uri.parse(_telegramCidrsUrl));
+      final response = await request.close();
+      if (response.statusCode != HttpStatus.ok) {
+        throw HttpException('status ${response.statusCode}');
+      }
+      final text = await response.transform(utf8.decoder).join();
+      final cidrs = [
+        for (final line in const LineSplitter().convert(text))
+          if (line.trim() case final cidr when cidr.isNotEmpty) cidr,
+      ];
+      final valid = cidrs.every((cidr) {
+        final parts = cidr.split('/');
+        final prefix = parts.length == 2 ? int.tryParse(parts.last) : null;
+        final address = InternetAddress.tryParse(parts.first);
+        return address != null &&
+            prefix != null &&
+            prefix >= 0 &&
+            prefix <= address.rawAddress.length * 8;
+      });
+      if (cidrs.isEmpty || !valid) throw const FormatException('invalid list');
+      final content = [
+        'const telegramCidrs = [',
+        for (final cidr in cidrs) "  '$cidr',",
+        '];',
+        '',
+      ].join('\n');
+      if (file.existsSync() && file.readAsStringSync() == content) {
+        file.setLastModifiedSync(DateTime.now());
+        print('telegram_cidrs.dart is up to date (${cidrs.length} entries).');
+        return;
+      }
+      file.writeAsStringSync(content);
+      print('telegram_cidrs.dart updated (${cidrs.length} entries).');
+    } catch (e) {
+      print('Skip updating telegram_cidrs.dart: $e');
+    } finally {
+      client.close();
+    }
+  }
+
+  static Future<void> _downloadAsset(
+    String url,
+    String destinationPath, {
+    int maxRetries = 3,
+  }) async {
+    final tempPath = '$destinationPath.tmp';
+    final tempFile = File(tempPath);
+    if (tempFile.existsSync()) {
+      tempFile.deleteSync();
+    }
+
+    for (var attempt = 1; attempt <= maxRetries; attempt++) {
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 30);
+      try {
+        final request = await client.getUrl(Uri.parse(url));
+        request.followRedirects = true;
+        request.maxRedirects = 10;
+        final response = await request.close();
+        if (response.statusCode != HttpStatus.ok) {
+          throw HttpException(
+            'Failed with status ${response.statusCode}',
+            uri: Uri.parse(url),
+          );
+        }
+        final sink = tempFile.openWrite();
+        await response.pipe(sink);
+        await sink.flush();
+        await sink.close();
+
+        final destinationFile = File(destinationPath);
+        if (destinationFile.existsSync()) {
+          destinationFile.deleteSync();
+        }
+        tempFile.renameSync(destinationPath);
+        File(destinationPath).setLastModifiedSync(DateTime.now());
+        return;
+      } catch (e) {
+        if (tempFile.existsSync()) {
+          try {
+            tempFile.deleteSync();
+          } catch (_) {}
+        }
+        if (attempt == maxRetries) {
+          rethrow;
+        }
+        print('Download failed ($e), retrying ($attempt/$maxRetries)...');
+        await Future.delayed(Duration(seconds: attempt * 2));
+      } finally {
+        client.close();
+      }
+    }
+  }
+}
+
+class AssetDownloadItem {
+  final String url;
+  final String fileName;
+
+  const AssetDownloadItem({required this.url, required this.fileName});
+}
+
+final _managedVersionPattern = RegExp(
+  r'^//\s*@version\s+(\d+)\s*$',
+  multiLine: true,
+);
+
+Future<void> _bumpManagedScriptVersion() async {
+  const path = 'assets/scripts/managed.js';
+  final file = File(path);
+  final current = await file.readAsString();
+  final currentVersion = _managedVersionPattern.firstMatch(current)?.group(1);
+  if (currentVersion == null) return;
+  final now = DateTime.now().toUtc();
+  final day =
+      '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
+  final today = int.parse('${day}01');
+  final next = int.parse(currentVersion) + 1;
+  final version = today > next ? today : next;
+  await file.writeAsString(
+    current.replaceFirst(_managedVersionPattern, '// @version $version'),
+  );
+  print('managed.js version $currentVersion -> $version');
+}
+
+class BuildCommand extends Command<void> {
+  Target target;
+
+  BuildCommand({required this.target}) {
+    if (target == Target.android || target == Target.linux) {
+      argParser.addOption(
+        'arch',
+        valueHelp: [
+          if (target != Target.android) 'auto',
+          ...arches.map((e) => e.name),
+        ].join(','),
+        help: 'The $name build desc',
+      );
+    } else {
+      argParser.addOption(
+        'arch',
+        valueHelp: ['auto', ...arches.map((e) => e.name)].join(','),
+        help: 'The $name build archName',
+      );
+    }
+    argParser.addOption(
+      'out',
+      valueHelp: [
+        if (target.same) 'app',
+        'core',
+        'core-only',
+        'helper',
+      ].join(','),
+      help: 'The $name build arch',
+    );
+    argParser.addOption(
+      'core-hash',
+      help: 'SHA256 hash of the (signed) core binary, used when --out=helper to embed the correct TOKEN',
+    );
+    argParser.addOption(
+      'env',
+      valueHelp: ['pre', 'stable'].join(','),
+      help: 'The $name build env',
+    );
+    argParser.addFlag(
+      'compatible',
+      help: 'Build with GOAMD64=v2 for broader compatibility on amd64',
+    );
+    argParser.addFlag('dev', help: 'Build debug/dev variant');
+    argParser.addFlag(
+      'ensure',
+      help: 'Skip build if output artifact already exists',
+    );
+    argParser.addFlag(
+      'standard',
+      help: 'Build the Standard variant with easytier, tailscale, zerotier, fake-tcp and gVisor',
+    );
+    argParser.addOption(
+      'core-version',
+      help: 'Version string injected into the core binary',
+    );
+  }
+
+  @override
+  String get description => 'build $name application';
+
+  @override
+  String get name => target.name;
+
+  List<Arch> get arches => Build.buildItems
+      .where((element) => element.target == target && element.arch != null)
+      .map((e) => e.arch!)
+      .toList();
+
+  Future<void> _getLinuxDependencies(Arch arch) async {
+    await Build.exec(Build.getExecutable('sudo apt update -y'));
+    await Build.exec(
+      Build.getExecutable('sudo apt install -y ninja-build libgtk-3-dev'),
+    );
+    await Build.exec(
+      Build.getExecutable('sudo apt install -y libayatana-appindicator3-dev'),
+    );
+    await Build.exec(
+      Build.getExecutable('sudo apt-get install -y libkeybinder-3.0-dev'),
+    );
+    await Build.exec(Build.getExecutable('sudo apt install -y locate'));
+    if (arch == Arch.amd64) {
+      await Build.exec(
+        Build.getExecutable('sudo apt install -y rpm patchelf libfuse2'),
+      );
+
+      final downloadName = arch == Arch.amd64 ? 'x86_64' : 'aarch64';
+      await Build.exec(
+        Build.getExecutable(
+          'wget -O appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-$downloadName.AppImage',
+        ),
+      );
+      await Build.exec(Build.getExecutable('chmod +x appimagetool'));
+      await Build.exec(
+        Build.getExecutable('sudo mv appimagetool /usr/local/bin/'),
+      );
+    }
+  }
+
+  Future<void> _setLinuxCoreSetuid() async {
+    final coreFile = File('libclash/linux/BettboxCore');
+    if (!coreFile.existsSync()) return;
+    try {
+      await Process.run('chmod', ['0755', coreFile.path]);
+    } catch (_) {}
+  }
+
+  Future<void> _getMacosDependencies() async {
+    await Build.exec(Build.getExecutable('npm install -g appdmg'));
+  }
+
+  Future<void> _buildDistributor({
+    required Target target,
+    required String targets,
+    String args = '',
+    required String env,
+    required String suffix,
+    bool standard = false,
+    Map<String, String>? environment,
+  }) async {
+    final sentryDsn = Platform.environment['SENTRY_DSN'] ?? '';
+    final sentryArg = sentryDsn.isNotEmpty
+        ? ' --build-dart-define=SENTRY_DSN=$sentryDsn'
+        : '';
+    final suffixArg = suffix.isNotEmpty
+        ? ' --build-dart-define=APP_ASSET_SUFFIX=$suffix'
+        : '';
+
+    final ipinfoToken = Platform.environment['IPINFO_TOKEN'] ?? '';
+    final ipinfoArg = ipinfoToken.isNotEmpty
+        ? ' --build-dart-define=IPINFO_TOKEN=$ipinfoToken'
+        : '';
+
+    final appDevArg = Build.isDev ? ' --build-dart-define=APP_DEV=true' : '';
+    final appStandardArg = standard
+        ? ' --build-dart-define=APP_STANDARD=true'
+        : '';
+
+    await Build.getDistributor();
+    await Build.exec(
+      name: name,
+      environment: environment,
+      Build.getExecutable(
+        'flutter_distributor package --skip-clean --platform ${target.name} --targets $targets --flutter-build-args=verbose$args$sentryArg$suffixArg$ipinfoArg --build-dart-define=APP_ENV=$env$appDevArg$appStandardArg',
+      ),
+    );
+  }
+
+  Future<String?> get systemArch async {
+    if (Platform.isWindows) {
+      return Platform.environment['PROCESSOR_ARCHITECTURE'];
+    } else if (Platform.isLinux || Platform.isMacOS) {
+      final result = await Process.run('uname', ['-m']);
+      return result.stdout.toString().trim();
+    }
+    return null;
+  }
+
+  String? _mapHostArch(String? hostArch) {
+    if (hostArch == null) return null;
+    final lower = hostArch.toLowerCase();
+    if (lower == 'amd64' || lower == 'x86_64' || lower == 'x64') return 'amd64';
+    if (lower == 'arm64' || lower == 'aarch64') return 'arm64';
+    if (lower.startsWith('arm')) return 'arm';
+    return null;
+  }
+
+  List<String> _expectedOutputs(Arch? arch) {
+    final items = Build.buildItems.where((element) {
+      return element.target == target &&
+          (arch == null ? true : element.arch == arch);
+    });
+
+    final outputs = <String>[];
+    for (final item in items) {
+      final outFileDir = join(Build.outDir, item.target.name, item.archName);
+      if (target == Target.android) {
+        outputs.add(join(outFileDir, '${Build.libName}.so'));
+        outputs.add(join(outFileDir, '${Build.libName}.h'));
+        continue;
+      }
+
+      outputs.add(
+        join(outFileDir, '${Build.coreName}${target.executableExtensionName}'),
+      );
+
+      if (target == Target.windows) {
+        outputs.add(
+          join(
+            outFileDir,
+            '${Build.helperName}${target.executableExtensionName}',
+          ),
+        );
+      }
+    }
+    return outputs;
+  }
+
+  DateTime _latestModified(Iterable<FileSystemEntity> entities) {
+    var latest = DateTime.fromMillisecondsSinceEpoch(0);
+    for (final entity in entities) {
+      if (!entity.existsSync()) continue;
+      final modified = entity.statSync().modified;
+      if (modified.isAfter(latest)) latest = modified;
+    }
+    return latest;
+  }
+
+  DateTime _windowsSourcesLastModified() {
+    final sources = <FileSystemEntity>[File(join(current, 'setup.dart'))];
+
+    final helperDir = Directory(Build._servicesDir);
+    if (helperDir.existsSync()) {
+      sources.addAll(
+        helperDir.listSync(recursive: true).where((entity) {
+          return entity is File &&
+              !isWithin(join(Build._servicesDir, 'target'), entity.path);
+        }),
+      );
+    }
+
+    final coreDir = Directory(Build._coreDir);
+    if (coreDir.existsSync()) {
+      sources.addAll(coreDir.listSync(recursive: true).whereType<File>());
+    }
+
+    return _latestModified(sources);
+  }
+
+  bool _outputsAreFresh(Arch? arch, bool standard) {
+    final outputs = _expectedOutputs(arch);
+    if (outputs.isEmpty || !outputs.every((path) => File(path).existsSync())) {
+      return false;
+    }
+
+    final tagsMatch = Build.buildItems
+        .where((item) {
+          return item.target == target &&
+              (arch == null ? true : item.arch == arch);
+        })
+        .every((item) {
+          final marker = File(Build.tagsMarkerPath(item));
+          return marker.existsSync() &&
+              marker.readAsStringSync() ==
+                  Build.getTags(item, standard: standard);
+        });
+    if (!tagsMatch) {
+      return false;
+    }
+
+    if (target == Target.windows) {
+      final latestInput = _windowsSourcesLastModified();
+      final oldestOutput = outputs
+          .map((path) => File(path).statSync().modified)
+          .reduce((a, b) => a.isBefore(b) ? a : b);
+      return !oldestOutput.isBefore(latestInput);
+    }
+
+    return true;
+  }
+
+  @override
+  Future<void> run() async {
+    await execute(
+      archName: argResults?['arch'] as String?,
+      out: argResults?['out'] as String?,
+      env: argResults?['env'] as String? ?? 'pre',
+      dev: argResults?['dev'] as bool? ?? false,
+      ensure: argResults?['ensure'] as bool? ?? false,
+      compatible: argResults?['compatible'] as bool? ?? false,
+      coreHash: argResults?['core-hash'] as String?,
+      standard: argResults?['standard'] as bool? ?? false,
+      coreVersion: argResults?['core-version'] as String?,
+    );
+  }
+
+  Future<void> execute({
+    String? archName,
+    String? out,
+    String env = 'pre',
+    bool dev = false,
+    bool ensure = false,
+    bool compatible = false,
+    String? coreHash,
+    bool standard = false,
+    String? coreVersion,
+  }) async {
+    if (compatible && target != Target.windows && target != Target.linux) {
+      throw '--compatible is only supported for windows and linux';
+    }
+    final mode = target == Target.android ? Mode.lib : Mode.core;
+    final String actualOut = out ?? (target.same ? 'app' : 'core');
+    Build.isDev = dev;
+
+    await Build.ensureAssets();
+
+    if (archName == 'auto') {
+      if (target == Target.android) {
+        throw '--arch auto is not supported for android; choose the device ABI explicitly';
+      }
+      if (!target.same) {
+        throw '--arch auto can only be used for the current host platform';
+      }
+      archName = _mapHostArch(await systemArch);
+      if (archName == null) {
+        throw 'Unable to detect host architecture';
+      }
+    }
+
+    final currentArches = arches
+        .where((element) => element.name == archName)
+        .toList();
+    final arch = currentArches.isEmpty ? null : currentArches.first;
+
+    if (arch == null && target != Target.android) {
+      throw 'Invalid arch parameter';
+    }
+
+    if (ensure && actualOut != 'app') {
+      if (_outputsAreFresh(arch, standard)) {
+        print('${target.name} output already exists');
+        return;
+      }
+    }
+
+    final corePaths = await Build.buildCore(
+      target: target,
+      arch: arch,
+      mode: mode,
+      compatible: compatible,
+      standard: standard,
+      coreVersion: coreVersion,
+    );
+
+    if (actualOut == 'core-only') {
+      return;
+    }
+
+    if (actualOut == 'helper') {
+      if (target != Target.windows) {
+        throw '--out helper is only supported for windows';
+      }
+      if (coreHash == null || coreHash.isEmpty) {
+        throw '--core-hash is required when --out=helper';
+      }
+      await Build.buildHelper(target, coreHash);
+      return;
+    }
+
+    if (actualOut != 'app') {
+      if (target == Target.windows) {
+        final token = await Build.calcSha256(corePaths.first);
+        await Build.buildHelper(target, token);
+      }
+      return;
+    }
+
+    await _bumpManagedScriptVersion();
+
+    final String desc = [
+      if (archName != null && archName.isNotEmpty) archName,
+      if (compatible) 'compatible',
+      if (standard && target != Target.android) 'standard',
+    ].join('-');
+
+    String appAssetSuffix = '';
+    switch (target) {
+      case Target.windows:
+        appAssetSuffix = 'windows-$desc-setup.exe';
+        break;
+      case Target.macos:
+        appAssetSuffix = 'macos-$desc.dmg';
+        break;
+      case Target.linux:
+        break;
+      case Target.android:
+        final variant = standard ? 'android-standard' : 'android';
+        if (archName == 'universal') {
+          appAssetSuffix = '$variant-universal.apk';
+        } else if (arch == Arch.arm64) {
+          appAssetSuffix = '$variant-arm64-v8a.apk';
+        } else if (arch == Arch.arm) {
+          appAssetSuffix = '$variant-armeabi-v7a.apk';
+        } else if (arch == Arch.amd64) {
+          appAssetSuffix = '$variant-x86_64.apk';
+        }
+        break;
+    }
+
+    switch (target) {
+      case Target.windows:
+        final token = target != Target.android
+            ? await Build.calcSha256(corePaths.first)
+            : null;
+        unawaited(Build.buildHelper(target, token!));
+        await _buildDistributor(
+          target: target,
+          targets: 'exe',
+          args: ' --description $desc --build-dart-define=CORE_SHA256=$token',
+          env: env,
+          suffix: appAssetSuffix,
+          standard: standard,
+        );
+        return;
+      case Target.linux:
+        final targetMap = {Arch.arm64: 'linux-arm64', Arch.amd64: 'linux-x64'};
+        final targets = [
+          'deb',
+          if (arch == Arch.amd64) 'appimage',
+          if (arch == Arch.amd64) 'rpm',
+        ];
+        final defaultTarget = targetMap[arch];
+        await _getLinuxDependencies(arch!);
+        await _setLinuxCoreSetuid();
+        for (final t in targets) {
+          final ext = t == 'appimage' ? 'AppImage' : t;
+          final currentSuffix = 'linux-$desc.$ext';
+          await _buildDistributor(
+            target: target,
+            targets: t,
+            args: ' --description $desc --build-target-platform $defaultTarget',
+            env: env,
+            suffix: currentSuffix,
+            standard: standard,
+          );
+        }
+        return;
+      case Target.android:
+        final targetMap = {
+          Arch.arm: 'android-arm',
+          Arch.arm64: 'android-arm64',
+          Arch.amd64: 'android-x64',
+        };
+        final defaultArches = [Arch.arm, Arch.arm64, Arch.amd64];
+        final defaultTargets = defaultArches
+            .where((element) => arch == null ? true : element == arch)
+            .map((e) => targetMap[e])
+            .toList();
+
+        final buildArgs = archName == 'universal'
+            ? ' --build-target-platform ${defaultTargets.join(",")} --description ${standard ? 'standard-universal' : 'universal'}'
+            : ',split-per-abi --build-target-platform ${defaultTargets.join(",")}${standard ? ' --description standard' : ''}';
+
+        unawaited(
+          _buildDistributor(
+            target: target,
+            targets: 'apk',
+            args: buildArgs,
+            env: env,
+            suffix: appAssetSuffix,
+            standard: standard,
+          ),
+        );
+        return;
+      case Target.macos:
+        await _getMacosDependencies();
+        await Build.exec(
+          Build.getExecutable('rm -rf Pods Podfile.lock'),
+          workingDirectory: 'macos',
+        );
+        await Build.exec(Build.getExecutable('flutter pub get'));
+        await Build.exec(
+          Build.getExecutable('pod install --repo-update'),
+          workingDirectory: 'macos',
+        );
+        final infoPlist = File('macos/Runner/Info.plist');
+        final infoPlistContent = await infoPlist.readAsString();
+        if (arch == Arch.amd64) {
+          await infoPlist.writeAsString(
+            infoPlistContent.replaceFirst(
+              '<key>FLTEnableImpeller</key>\n\t<true/>',
+              '<key>FLTEnableImpeller</key>\n\t<false/>',
+            ),
+          );
+        }
+        try {
+          await _buildDistributor(
+            target: target,
+            targets: 'dmg',
+            args: ' --description $desc',
+            env: env,
+            suffix: appAssetSuffix,
+            standard: standard,
+            environment: arch == Arch.arm64
+                ? {'FLUTTER_MACOS_ARM64_ONLY': 'true'}
+                : null,
+          );
+        } finally {
+          await infoPlist.writeAsString(infoPlistContent);
+        }
+        return;
+    }
+  }
+}
+
+class AutoBuildCommand extends Command<void> {
+  AutoBuildCommand() {
+    argParser.addOption(
+      'device-id',
+      help: 'Target Flutter device ID (e.g. from \${command:flutter.getSelectedDeviceId})',
+    );
+    argParser.addOption(
+      'arch',
+      help: 'Target architecture (default: auto detect based on device)',
+    );
+    argParser.addOption(
+      'out',
+      valueHelp: ['app', 'core', 'core-only', 'helper'].join(','),
+      defaultsTo: 'core',
+      help: 'Build output type',
+    );
+    argParser.addOption(
+      'core-hash',
+      help: 'SHA256 hash of the core binary when --out=helper',
+    );
+    argParser.addOption(
+      'env',
+      valueHelp: ['pre', 'stable'].join(','),
+      help: 'Build env',
+    );
+    argParser.addFlag(
+      'compatible',
+      help: 'Build with GOAMD64=v2 for broader compatibility on amd64',
+    );
+    argParser.addFlag('dev', help: 'Build debug/dev variant');
+    argParser.addFlag(
+      'ensure',
+      help: 'Skip build if output artifact already exists',
+    );
+    argParser.addFlag(
+      'standard',
+      help: 'Build the Standard variant with easytier, tailscale, zerotier, fake-tcp and gVisor',
+    );
+    argParser.addOption(
+      'core-version',
+      help: 'Version string injected into the core binary',
+    );
+  }
+
+  @override
+  String get description => 'Automatically detect target device and build core';
+
+  @override
+  String get name => 'auto';
+
+  @override
+  Future<void> run() async {
+    final optDeviceId = argResults?['device-id']?.toString().trim() ?? '';
+    final rawDeviceId = optDeviceId.startsWith('-') ? '' : optDeviceId;
+    final explicitArch = argResults?['arch'] as String?;
+
+    Target? target;
+    String? archName = explicitArch;
+
+    if (rawDeviceId == 'windows') {
+      target = Target.windows;
+      archName ??= 'auto';
+    } else if (rawDeviceId == 'macos') {
+      target = Target.macos;
+      archName ??= 'auto';
+    } else if (rawDeviceId == 'linux') {
+      target = Target.linux;
+      archName ??= 'auto';
+    } else if (rawDeviceId == 'chrome' ||
+        rawDeviceId == 'edge' ||
+        rawDeviceId == 'web-server') {
+      print(
+        'Web device "$rawDeviceId" does not require core binary. Skipping.',
+      );
+      return;
+    } else if (rawDeviceId.isEmpty) {
+      if (Platform.isWindows) {
+        target = Target.windows;
+      } else if (Platform.isMacOS) {
+        target = Target.macos;
+      } else if (Platform.isLinux) {
+        target = Target.linux;
+      } else {
+        throw 'No device specified and unable to determine host platform.';
+      }
+      archName ??= 'auto';
+    } else {
+      final res = await Process.run('flutter', [
+        'devices',
+        '--machine',
+      ], runInShell: true);
+      if (res.exitCode != 0) {
+        throw 'Failed to execute "flutter devices --machine": ${res.stderr}';
+      }
+      final jsonList = jsonDecode(res.stdout.toString()) as List<dynamic>;
+      final device = jsonList.cast<Map<String, dynamic>?>().firstWhere(
+        (d) => d?['id'] == rawDeviceId,
+        orElse: () => null,
+      );
+
+      if (device == null) {
+        throw 'Device "$rawDeviceId" not found in flutter devices list.';
+      }
+
+      final targetPlatform = (device['targetPlatform'] as String? ?? '')
+          .toLowerCase();
+      if (targetPlatform.startsWith('android')) {
+        target = Target.android;
+        if (archName == null) {
+          if (targetPlatform.contains('arm64')) {
+            archName = 'arm64';
+          } else if (targetPlatform.contains('x64') ||
+              targetPlatform.contains('x86_64')) {
+            archName = 'amd64';
+          } else if (targetPlatform.contains('arm')) {
+            archName = 'arm';
+          } else {
+            throw 'Unsupported android platform architecture: $targetPlatform';
+          }
+        }
+      } else if (targetPlatform.startsWith('darwin') ||
+          targetPlatform.startsWith('macos')) {
+        target = Target.macos;
+        archName ??= 'auto';
+      } else if (targetPlatform.startsWith('windows')) {
+        target = Target.windows;
+        archName ??= 'auto';
+      } else if (targetPlatform.startsWith('linux')) {
+        target = Target.linux;
+        archName ??= 'auto';
+      } else if (targetPlatform.startsWith('web')) {
+        print(
+          'Web target platform "$targetPlatform" does not require core binary. Skipping.',
+        );
+        return;
+      } else {
+        throw 'Unknown or unsupported targetPlatform: $targetPlatform';
+      }
+    }
+
+    final cmd = BuildCommand(target: target);
+    await cmd.execute(
+      archName: archName,
+      out: argResults?['out'] as String? ?? 'core',
+      env: argResults?['env'] as String? ?? 'pre',
+      dev: argResults?['dev'] as bool? ?? false,
+      ensure: argResults?['ensure'] as bool? ?? false,
+      compatible: argResults?['compatible'] as bool? ?? false,
+      coreHash: argResults?['core-hash'] as String?,
+      standard: argResults?['standard'] as bool? ?? false,
+      coreVersion: argResults?['core-version'] as String?,
+    );
+  }
+}
+
+class AssetsCommand extends Command<void> {
+  AssetsCommand() {
+    argParser.addFlag(
+      'force',
+      abbr: 'f',
+      help: 'Force download assets even if within 48 hours',
+    );
+  }
+
+  @override
+  String get description => 'Download or update assets if older than 48 hours';
+
+  @override
+  String get name => 'assets';
+
+  @override
+  Future<void> run() async {
+    final force = argResults?['force'] as bool? ?? false;
+    await Build.ensureAssets(force: force);
+  }
+}
+
+Future<void> main(Iterable<String> args) async {
+  final runner = CommandRunner('setup', 'build Application');
+  runner.addCommand(AutoBuildCommand());
+  runner.addCommand(AssetsCommand());
+  runner.addCommand(BuildCommand(target: Target.android));
+  runner.addCommand(BuildCommand(target: Target.linux));
+  runner.addCommand(BuildCommand(target: Target.windows));
+  runner.addCommand(BuildCommand(target: Target.macos));
+  await runner.run(args);
+}

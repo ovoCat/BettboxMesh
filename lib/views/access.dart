@@ -1,0 +1,1454 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:bett_box/common/common.dart';
+import 'package:bett_box/enum/enum.dart';
+import 'package:bett_box/models/models.dart';
+import 'package:bett_box/plugins/app.dart';
+import 'package:bett_box/providers/providers.dart';
+import 'package:bett_box/state.dart';
+import 'package:bett_box/widgets/widgets.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+final _packageNameRegex = RegExp(r'^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+$');
+final _packageSplitRegex = RegExp(r'[\n,\s]+');
+
+final _packageIconPathCache = <String, String?>{};
+final _packageIconPathPending = <String, Future<String?>>{};
+const _maxPackageIconCacheSize = 256;
+
+void _cachePackageIconPath(String packageName, String? path) {
+  _packageIconPathCache.remove(packageName);
+  while (_packageIconPathCache.length >= _maxPackageIconCacheSize) {
+    _packageIconPathCache.remove(_packageIconPathCache.keys.first);
+  }
+  _packageIconPathCache[packageName] = path;
+}
+
+Future<String?> _getPackageIconPath(
+  String packageName, {
+  bool forceRefresh = false,
+}) {
+  if (forceRefresh) {
+    _packageIconPathCache.remove(packageName);
+    _packageIconPathPending.remove(packageName);
+  }
+  if (_packageIconPathCache.containsKey(packageName)) {
+    final path = _packageIconPathCache[packageName];
+    _cachePackageIconPath(packageName, path);
+    return Future.value(path);
+  }
+  return _packageIconPathPending.putIfAbsent(packageName, () async {
+    try {
+      final path = await app.getPackageIconPath(
+        packageName,
+        forceRefresh: forceRefresh,
+      );
+      _cachePackageIconPath(packageName, path);
+      return path;
+    } finally {
+      unawaited(_packageIconPathPending.remove(packageName));
+    }
+  });
+}
+
+class AccessView extends ConsumerStatefulWidget {
+  const AccessView({super.key});
+
+  @override
+  ConsumerState<AccessView> createState() => _AccessViewState();
+}
+
+class _AccessViewState extends ConsumerState<AccessView>
+    with WidgetsBindingObserver {
+  List<String> acceptList = [];
+  List<String> rejectList = [];
+  late ScrollController _controller;
+  final Completer<void> _completer = Completer<void>();
+  bool _requestedPackageListPermission = false;
+  bool _notifiedPackageListPermissionDenied = false;
+  bool _isCheckingPermissionOrLoading = false;
+  bool _packageListPermissionDenied = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _updateInitList();
+    _controller = ScrollController();
+    WidgetsBinding.instance.addObserver(this);
+    _prefetchPackages();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.afterRouteTransition(() {
+        if (!mounted) return;
+        _checkPermissionAndLoadPackages(interactive: true);
+      });
+    });
+  }
+
+  Future<void> _prefetchPackages() async {
+    if (ref.read(packagesProvider).isNotEmpty) return;
+    try {
+      if (!await app.hasPackageListPermission()) return;
+      await app.getPackages();
+    } catch (_) {}
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    if (!mounted) return;
+    if (ref.read(packagesProvider).isNotEmpty &&
+        !_packageListPermissionDenied) {
+      return;
+    }
+    _checkPermissionAndLoadPackages(interactive: false);
+  }
+
+  void _completeLoadingIfNeeded() {
+    if (_completer.isCompleted) return;
+    _completer.complete();
+  }
+
+  Widget _buildPackageListPermissionDeniedView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppIcon(
+              Icons.apps_outlined,
+              size: 72,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              appLocalizations.packageListPermissionDenied,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              appLocalizations.packageListPermissionRequired,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 20),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              alignment: WrapAlignment.center,
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: () async {
+                    _requestedPackageListPermission = true;
+                    await app.requestPackageListPermission();
+                  },
+                  icon: const AppIcon(Icons.settings),
+                  label: Text(appLocalizations.openSettings),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _checkPermissionAndLoadPackages({
+    required bool interactive,
+    bool forceReload = false,
+    bool openSettingsFallback = false,
+  }) async {
+    if (_isCheckingPermissionOrLoading) return;
+    _isCheckingPermissionOrLoading = true;
+    try {
+      final hasPermission = await app.hasPackageListPermission();
+      if (!mounted) return;
+
+      if (!hasPermission) {
+        if (!_packageListPermissionDenied) {
+          setState(() {
+            _packageListPermissionDenied = true;
+          });
+        }
+        if (interactive) {
+          if (openSettingsFallback) {
+            _requestedPackageListPermission = true;
+            await app.requestPackageListPermission();
+          } else {
+            final res = await globalState.showMessage(
+              title: appLocalizations.tip,
+              message: TextSpan(
+                text: appLocalizations.packageListPermissionRequired,
+              ),
+              confirmText: appLocalizations.openSettings,
+            );
+            if (!mounted) return;
+            if (res == true) {
+              _requestedPackageListPermission = true;
+              await app.requestPackageListPermission();
+            } else if (!_notifiedPackageListPermissionDenied) {
+              _notifiedPackageListPermissionDenied = true;
+              globalState.showNotifier(
+                appLocalizations.packageListPermissionDenied,
+              );
+            }
+          }
+        } else if (_requestedPackageListPermission &&
+            !_notifiedPackageListPermissionDenied) {
+          _notifiedPackageListPermissionDenied = true;
+          globalState.showNotifier(
+            appLocalizations.packageListPermissionDenied,
+          );
+        }
+        _completeLoadingIfNeeded();
+        return;
+      }
+
+      if (_packageListPermissionDenied) {
+        setState(() {
+          _packageListPermissionDenied = false;
+        });
+      }
+      await globalState.appController.getPackages(forceRefresh: forceReload);
+      if (!mounted) return;
+      if (system.isAndroid && ref.read(packagesProvider).isEmpty) {
+        if (!_packageListPermissionDenied) {
+          setState(() {
+            _packageListPermissionDenied = true;
+          });
+        }
+        if (interactive) {
+          final res = await globalState.showMessage(
+            title: appLocalizations.tip,
+            message: TextSpan(
+              text: appLocalizations.packageListPermissionRequired,
+            ),
+            confirmText: appLocalizations.openSettings,
+          );
+          if (!mounted) return;
+          if (res == true) {
+            _requestedPackageListPermission = true;
+            await app.requestPackageListPermission();
+          }
+        }
+        _completeLoadingIfNeeded();
+        return;
+      }
+      _completeLoadingIfNeeded();
+    } catch (e) {
+      _completeLoadingIfNeeded();
+      if (e is PlatformException && e.code == 'PACKAGE_LIST_PERMISSION') {
+        if (!mounted) return;
+        if (!_packageListPermissionDenied) {
+          setState(() {
+            _packageListPermissionDenied = true;
+          });
+        }
+        if (interactive) {
+          if (openSettingsFallback) {
+            _requestedPackageListPermission = true;
+            await app.requestPackageListPermission();
+            return;
+          }
+          final res = await globalState.showMessage(
+            title: appLocalizations.tip,
+            message: TextSpan(
+              text: appLocalizations.packageListPermissionRequired,
+            ),
+            confirmText: appLocalizations.openSettings,
+          );
+          if (!mounted) return;
+          if (res == true) {
+            _requestedPackageListPermission = true;
+            await app.requestPackageListPermission();
+          } else if (!_notifiedPackageListPermissionDenied) {
+            _notifiedPackageListPermissionDenied = true;
+            globalState.showNotifier(
+              appLocalizations.packageListPermissionDenied,
+            );
+          }
+          return;
+        }
+        if (_requestedPackageListPermission &&
+            !_notifiedPackageListPermissionDenied) {
+          _notifiedPackageListPermissionDenied = true;
+          globalState.showNotifier(
+            appLocalizations.packageListPermissionDenied,
+          );
+          return;
+        }
+      }
+      globalState.showNotifier(e.toString());
+    } finally {
+      _isCheckingPermissionOrLoading = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _updateInitList() {
+    acceptList = globalState.config.vpnProps.accessControl.acceptList;
+    rejectList = globalState.config.vpnProps.accessControl.rejectList;
+  }
+
+  Widget _buildSearchButton() {
+    return IconButton(
+      tooltip: appLocalizations.search,
+      onPressed: () {
+        showSearch(
+          context: context,
+          delegate: AccessControlSearchDelegate(
+            acceptList: acceptList,
+            rejectList: rejectList,
+          ),
+        ).then((_) {
+          if (mounted) {
+            setState(() {
+              _updateInitList();
+            });
+          }
+        });
+      },
+      icon: const AppIcon(Icons.search),
+    );
+  }
+
+  Widget _buildRefreshButton() {
+    return IconButton(
+      tooltip: appLocalizations.refreshAppList,
+      onPressed: () async {
+        final res = await globalState.showMessage(
+          title: appLocalizations.tip,
+          message: TextSpan(text: appLocalizations.refreshAppListConfirm),
+        );
+        if (res != true) return;
+
+        // Reload app list (auto-checks and requests permissions)
+        await globalState.appController.safeRun(() async {
+          // Clear cache, force reload
+          _packageIconPathCache.clear();
+          _packageIconPathPending.clear();
+          // Mark as force refresh mode
+          ref.read(forceRefreshIconProvider.notifier).value = true;
+          await _checkPermissionAndLoadPackages(
+            interactive: true,
+            forceReload: true,
+          );
+          // Reset force refresh flag
+          if (mounted) {
+            ref.read(forceRefreshIconProvider.notifier).value = false;
+          }
+        }, needLoading: true);
+
+        if (mounted) {
+          setState(() {
+            _updateInitList();
+          });
+        }
+      },
+      icon: const AppIcon(Icons.sync),
+    );
+  }
+
+  Widget _buildIntelligentButton() {
+    return IconButton(
+      tooltip: appLocalizations.intelligentSelected,
+      onPressed: () async {
+        final res = await globalState.showMessage(
+          title: appLocalizations.tip,
+          message: TextSpan(text: appLocalizations.intelligentSelectedConfirm),
+        );
+        if (res != true) return;
+        await _intelligentSelected();
+      },
+      icon: const AppIcon(Icons.auto_awesome),
+    );
+  }
+
+  Future<void> _intelligentSelected() async {
+    final commonScaffoldState = context.commonScaffoldState;
+    if (commonScaffoldState?.mounted != true) return;
+    final chinaPackageNames = await globalState.appController
+        .safeRun<List<String>>(needLoading: true, () async {
+          return await app.getChinaPackageNames();
+        });
+    if (chinaPackageNames == null || !mounted) return;
+    final china = chinaPackageNames.toSet();
+    final visible = ref
+        .read(packageListSelectorStateProvider)
+        .list
+        .map((item) => item.packageName)
+        .toSet();
+    List<String> withVisible(List<String> list, bool Function(String) test) => [
+      ...list.where((item) => !visible.contains(item)),
+      ...visible.where(test),
+    ];
+    ref
+        .read(vpnSettingProvider.notifier)
+        .updateState(
+          (state) => state.copyWith.accessControl(
+            acceptList: withVisible(
+              state.accessControl.acceptList,
+              (item) => !china.contains(item),
+            ),
+            rejectList: withVisible(
+              state.accessControl.rejectList,
+              china.contains,
+            ),
+          ),
+        );
+  }
+
+  Widget _buildSettingButton() {
+    return IconButton(
+      onPressed: () async {
+        await showSheet<int>(
+          context: context,
+          props: SheetProps(isScrollControlled: true),
+          builder: (_, type) {
+            return AdaptiveSheetScaffold(
+              type: type,
+              body: AccessControlPanel(),
+              title: appLocalizations.proxiesSetting,
+            );
+          },
+        );
+      },
+      icon: const AppIcon(Icons.tune),
+    );
+  }
+
+  void _handleSelected(Set<String> selectedSet, Package package, bool? value) {
+    final newSelectedSet = Set<String>.of(selectedSet);
+    if (value == true) {
+      newSelectedSet.add(package.packageName);
+    } else {
+      newSelectedSet.remove(package.packageName);
+    }
+    final valueList = newSelectedSet.toList();
+    ref.read(vpnSettingProvider.notifier).updateState((state) {
+      final currentManualList = state.accessControl.manualList;
+      final newManualList =
+          value == false && currentManualList.contains(package.packageName)
+          ? currentManualList.where((e) => e != package.packageName).toList()
+          : currentManualList;
+      return switch (state.accessControl.mode ==
+          AccessControlMode.acceptSelected) {
+        true => state.copyWith.accessControl(
+          acceptList: valueList,
+          manualList: newManualList,
+        ),
+        false => state.copyWith.accessControl(
+          rejectList: valueList,
+          manualList: newManualList,
+        ),
+      };
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(packageListSelectorStateProvider);
+    final accessControl = state.accessControl;
+    final accessControlMode = accessControl.mode;
+    final packages = state.getSortList(
+      accessControlMode == AccessControlMode.acceptSelected
+          ? acceptList
+          : rejectList,
+    );
+    final currentList = accessControl.currentList;
+    final currentSet = currentList.toSet();
+    final selectedSet = <String>{};
+    for (final package in packages) {
+      if (currentSet.contains(package.packageName)) {
+        selectedSet.add(package.packageName);
+      }
+    }
+    final describe = accessControlMode == AccessControlMode.acceptSelected
+        ? '${appLocalizations.accessControlAllowDesc} (${appLocalizations.whitelistMode})'
+        : '${appLocalizations.accessControlNotAllowDesc} (${appLocalizations.blacklistMode})';
+
+    return Column(
+      mainAxisSize: MainAxisSize.max,
+      children: [
+        Flexible(
+          flex: 0,
+          child: Padding(
+            padding: const EdgeInsets.only(left: 16, right: 16, top: 12),
+            child: CommonCard(
+              type: CommonCardType.filled,
+              child: ListItem.switchItem(
+                title: Text(appLocalizations.appAccessControl),
+                trailing: accessControl.enable ? _buildRefreshButton() : null,
+                delegate: SwitchDelegate(
+                  value: accessControl.enable,
+                  onChanged: (enable) {
+                    ref
+                        .read(vpnSettingProvider.notifier)
+                        .updateState(
+                          (state) =>
+                              state.copyWith.accessControl(enable: enable),
+                        );
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Flexible(
+          child: DisabledMask(
+            status: !accessControl.enable,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 5,
+                  ),
+                  child: CommonCard(
+                    type: CommonCardType.filled,
+                    child: ActivateBox(
+                      active: accessControl.enable,
+                      child: Padding(
+                        padding: const EdgeInsets.only(
+                          top: 4,
+                          bottom: 4,
+                          left: 16,
+                          right: 8,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          mainAxisSize: MainAxisSize.max,
+                          children: [
+                            Expanded(
+                              child: IntrinsicHeight(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.max,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      child: Row(
+                                        children: [
+                                          Flexible(
+                                            child: Text(
+                                              appLocalizations.selected,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelLarge
+                                                  ?.copyWith(
+                                                    color: Theme.of(context)
+                                                        .colorScheme
+                                                        .primary,
+                                                  ),
+                                            ),
+                                          ),
+                                          const Flexible(
+                                            child: SizedBox(width: 8),
+                                          ),
+                                          Flexible(
+                                            child: Text(
+                                              '${selectedSet.length}',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .labelLarge
+                                                  ?.copyWith(
+                                                    color: Theme.of(context)
+                                                        .colorScheme
+                                                        .primary,
+                                                  ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Flexible(child: Text(describe)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                Flexible(child: _buildSearchButton()),
+                                Flexible(child: _buildIntelligentButton()),
+                                Flexible(child: _buildSettingButton()),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  flex: 1,
+                  child: FutureBuilder(
+                    future: _completer.future,
+                    builder: (_, snapshot) {
+                      if (snapshot.connectionState != ConnectionState.done) {
+                        return const Center(
+                          child: SyncedLoading(
+                            size: 40,
+                            child: CircularProgressIndicator(),
+                          ),
+                        );
+                      }
+                      if (_packageListPermissionDenied) {
+                        return _buildPackageListPermissionDeniedView();
+                      }
+                      return packages.isEmpty
+                          ? NullStatus(label: appLocalizations.noData)
+                          : CommonScrollBar(
+                              controller: _controller,
+                              child: ListView.builder(
+                                controller: _controller,
+                                itemCount: packages.length,
+                                addAutomaticKeepAlives: false,
+                                padding: const EdgeInsets.only(
+                                  bottom: 24,
+                                  top: 4,
+                                ),
+                                prototypeItem: _PackageRow(
+                                  package: packages.first,
+                                  value: false,
+                                  isActive: accessControl.enable,
+                                  onChanged: (_) {},
+                                ),
+                                itemBuilder: (_, index) {
+                                  final package = packages[index];
+                                  return _PackageRow(
+                                    key: Key(package.packageName),
+                                    package: package,
+                                    value: selectedSet.contains(
+                                      package.packageName,
+                                    ),
+                                    isActive: accessControl.enable,
+                                    showDivider: index < packages.length - 1,
+                                    onChanged: (value) {
+                                      _handleSelected(
+                                        selectedSet,
+                                        package,
+                                        value,
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PackageRow extends StatelessWidget {
+  final Package package;
+  final bool value;
+  final bool isActive;
+  final bool showDivider;
+  final void Function(bool?) onChanged;
+
+  const _PackageRow({
+    super.key,
+    required this.package,
+    required this.value,
+    required this.isActive,
+    required this.onChanged,
+    this.showDivider = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = context.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          PackageListItem(
+            package: package,
+            value: value,
+            isActive: isActive,
+            onChanged: onChanged,
+          ),
+          Divider(
+            height: 1,
+            thickness: 1,
+            color: showDivider
+                ? colorScheme.outlineVariant.withValues(
+                    alpha: colorScheme.brightness == Brightness.light
+                        ? 0.3
+                        : 0.2,
+                  )
+                : Colors.transparent,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class PackageListItem extends StatelessWidget {
+  final Package package;
+  final bool value;
+  final bool isActive;
+  final void Function(bool?) onChanged;
+
+  const PackageListItem({
+    super.key,
+    required this.package,
+    required this.value,
+    required this.isActive,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ActivateBox(
+      active: isActive,
+      child: ListItem.checkbox(
+        leading: PackageIcon(packageName: package.packageName),
+        title: EmojiText(
+          package.label,
+          style: const TextStyle(overflow: TextOverflow.ellipsis),
+          maxLines: 1,
+        ),
+        subtitle: Text(
+          package.packageName,
+          style: const TextStyle(overflow: TextOverflow.ellipsis),
+          maxLines: 1,
+        ),
+        delegate: CheckboxDelegate(
+          value: value,
+          onChanged: onChanged,
+          onLongPress: _openDetails,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openDetails() async {
+    if (await app.openAppDetails(package.packageName)) return;
+    globalState.showNotifier(appLocalizations.appNotInstalled);
+  }
+}
+
+class PackageIcon extends ConsumerWidget {
+  final String packageName;
+
+  const PackageIcon({super.key, required this.packageName});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final forceRefresh = ref.watch(forceRefreshIconProvider);
+    return SizedBox(
+      width: 48,
+      height: 48,
+      child: FutureBuilder<String?>(
+        initialData: _packageIconPathCache[packageName],
+        future: _getPackageIconPath(packageName, forceRefresh: forceRefresh),
+        builder: (context, snapshot) {
+          final path = snapshot.data;
+          if (path == null || path.isEmpty) return _buildDefaultIcon(context);
+          return Image.file(
+            File(path),
+            gaplessPlayback: true,
+            width: 48,
+            height: 48,
+            cacheWidth: 48,
+            cacheHeight: 48,
+            useLogicalCacheSize: true,
+            errorBuilder: (_, _, _) {
+              if (_packageIconPathCache[packageName] == path) {
+                _packageIconPathCache.remove(packageName);
+              }
+              return _buildDefaultIcon(context);
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildDefaultIcon(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: context.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Icon(
+        context.resolveIcon(Icons.apps),
+        size: 24,
+        color: context.colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+}
+
+Future<String?> showPackagePicker(BuildContext context) async {
+  await context.dismissKeyboard();
+  if (!context.mounted) return null;
+  return showSheet<String>(
+    context: context,
+    props: const SheetProps(isScrollControlled: true),
+    builder: (_, type) => AdaptiveSheetScaffold(
+      type: type,
+      title: appLocalizations.appAccessControl,
+      body: const PackagePickerPanel(),
+    ),
+  );
+}
+
+class PackagePickerPanel extends ConsumerStatefulWidget {
+  const PackagePickerPanel({super.key});
+
+  @override
+  ConsumerState<PackagePickerPanel> createState() => _PackagePickerPanelState();
+}
+
+class _PackagePickerPanelState extends ConsumerState<PackagePickerPanel> {
+  bool _ready = false;
+  bool _denied = false;
+  String _query = '';
+  final _queryController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.afterRouteTransition(_load);
+    });
+  }
+
+  @override
+  void dispose() {
+    _queryController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    var denied = false;
+    try {
+      if (await app.hasPackageListPermission()) {
+        await globalState.appController.getPackages();
+      } else {
+        denied = true;
+      }
+    } catch (_) {
+      denied = true;
+    }
+    if (!mounted) return;
+    setState(() {
+      _denied = denied || ref.read(packagesProvider).isEmpty;
+      _ready = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_ready) {
+      return const SizedBox(
+        height: 240,
+        child: Center(
+          child: SyncedLoading(size: 40, child: CircularProgressIndicator()),
+        ),
+      );
+    }
+    if (_denied) {
+      return SizedBox(
+        height: 240,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              spacing: 12,
+              children: [
+                Text(
+                  appLocalizations.packageListPermissionRequired,
+                  textAlign: TextAlign.center,
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: app.requestPackageListPermission,
+                  icon: const AppIcon(Icons.settings),
+                  label: Text(appLocalizations.openSettings),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final state = ref.watch(packageListSelectorStateProvider);
+    final accessControl = state.accessControl;
+    final isAccept = accessControl.mode == AccessControlMode.acceptSelected;
+    final active = accessControl.enable;
+    final currentList = accessControl.currentList;
+    final currentSet = currentList.toSet();
+    final all = state.getSortList(active ? currentList : const []);
+    final query = _query.trim().toLowerCase();
+    final packages = query.isEmpty
+        ? all
+        : all
+              .where(
+                (item) =>
+                    item.label.toLowerCase().contains(query) ||
+                    item.packageName.toLowerCase().contains(query),
+              )
+              .toList();
+    final colorScheme = context.colorScheme;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        await context.dismissKeyboard();
+        if (!context.mounted) return;
+        Navigator.of(context).pop();
+      },
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: TextField(
+              controller: _queryController,
+              onChanged: (value) => setState(() => _query = value),
+              decoration: InputDecoration(
+                hintText: appLocalizations.search,
+                prefixIcon: Icon(context.resolveIcon(Icons.search)),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: Icon(context.resolveIcon(Icons.clear)),
+                        onPressed: () {
+                          _queryController.clear();
+                          setState(() => _query = '');
+                        },
+                      ),
+              ),
+            ),
+          ),
+          if (active)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Row(
+                children: [
+                  Icon(
+                    context.resolveIcon(
+                      isAccept ? Icons.adjust_outlined : Icons.block_outlined,
+                    ),
+                    size: 18,
+                    color: colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${isAccept ? appLocalizations.whitelistMode : appLocalizations.blacklistMode} · ${appLocalizations.selected} ${currentSet.length}',
+                      style: context.textTheme.labelLarge?.copyWith(
+                        color: colorScheme.primary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: packages.isEmpty
+                ? NullStatus(label: appLocalizations.noData)
+                : ListView.builder(
+                    itemCount: packages.length,
+                    itemExtent: 72,
+                    padding: const EdgeInsets.only(bottom: 24),
+                    itemBuilder: (context, index) {
+                      final package = packages[index];
+                      final inList =
+                          active && currentSet.contains(package.packageName);
+                      return RepaintBoundary(
+                        key: Key(package.packageName),
+                        child: ListItem(
+                          leading: PackageIcon(
+                            packageName: package.packageName,
+                          ),
+                          title: EmojiText(
+                            package.label,
+                            style: const TextStyle(
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            maxLines: 1,
+                          ),
+                          subtitle: Text(
+                            package.packageName,
+                            style: const TextStyle(
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            maxLines: 1,
+                          ),
+                          trailing: inList
+                              ? AppIcon(
+                                  isAccept
+                                      ? Icons.adjust_outlined
+                                      : Icons.block_outlined,
+                                  color: colorScheme.primary,
+                                )
+                              : null,
+                          onTap: () async {
+                            await context.dismissKeyboard();
+                            if (!context.mounted) return;
+                            Navigator.of(context).pop(package.packageName);
+                          },
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class AccessControlSearchDelegate extends SearchDelegate<dynamic> {
+  List<String> acceptList = [];
+  List<String> rejectList = [];
+
+  AccessControlSearchDelegate({
+    required this.acceptList,
+    required this.rejectList,
+  });
+
+  @override
+  List<Widget>? buildActions(BuildContext context) {
+    return [
+      IconButton(
+        onPressed: () {
+          if (query.isEmpty) {
+            close(context, null);
+            return;
+          }
+          query = '';
+        },
+        icon: const AppIcon(Icons.clear),
+      ),
+      const SizedBox(width: 8),
+    ];
+  }
+
+  @override
+  Widget? buildLeading(BuildContext context) {
+    return IconButton(
+      onPressed: () {
+        close(context, null);
+      },
+      icon: const AppIcon(Icons.arrow_back),
+    );
+  }
+
+  void _handleSelected(
+    WidgetRef ref,
+    Set<String> selectedSet,
+    Package package,
+    bool? value,
+  ) {
+    final newSelectedSet = Set<String>.of(selectedSet);
+    if (value == true) {
+      newSelectedSet.add(package.packageName);
+    } else {
+      newSelectedSet.remove(package.packageName);
+    }
+    final valueList = newSelectedSet.toList();
+    ref.read(vpnSettingProvider.notifier).updateState((state) {
+      final currentManualList = state.accessControl.manualList;
+      final newManualList =
+          value == false && currentManualList.contains(package.packageName)
+          ? currentManualList.where((e) => e != package.packageName).toList()
+          : currentManualList;
+      return switch (state.accessControl.mode ==
+          AccessControlMode.acceptSelected) {
+        true => state.copyWith.accessControl(
+          acceptList: valueList,
+          manualList: newManualList,
+        ),
+        false => state.copyWith.accessControl(
+          rejectList: valueList,
+          manualList: newManualList,
+        ),
+      };
+    });
+  }
+
+  Widget _packageList() {
+    final lowQuery = query.toLowerCase();
+    return Consumer(
+      builder: (context, ref, _) {
+        final (packages, isAccessControl, currentList) = ref.watch(
+          packageListSelectorStateProvider.select(
+            (state) => (
+              state.getSortList(
+                state.accessControl.mode == AccessControlMode.acceptSelected
+                    ? acceptList
+                    : rejectList,
+              ),
+              state.accessControl.enable,
+              state.accessControl.currentList,
+            ),
+          ),
+        );
+
+        // Search filter (inside Consumer, auto-responds to query changes)
+        final queryPackages = query.isEmpty
+            ? packages
+            : packages
+                  .where(
+                    (package) =>
+                        package.label.toLowerCase().contains(lowQuery) ||
+                        package.packageName.contains(lowQuery),
+                  )
+                  .toList();
+
+        final currentSet = currentList.toSet();
+        final selectedSet = <String>{};
+        for (final package in packages) {
+          if (currentSet.contains(package.packageName)) {
+            selectedSet.add(package.packageName);
+          }
+        }
+
+        return DisabledMask(
+          status: !isAccessControl,
+          child: ListView.builder(
+            itemCount: queryPackages.length,
+            itemExtent: 72,
+            itemBuilder: (_, index) {
+              final package = queryPackages[index];
+              return PackageListItem(
+                key: Key(package.packageName),
+                package: package,
+                value: selectedSet.contains(package.packageName),
+                isActive: isAccessControl,
+                onChanged: (value) {
+                  _handleSelected(ref, selectedSet, package, value);
+                },
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget buildResults(BuildContext context) {
+    return buildSuggestions(context);
+  }
+
+  @override
+  Widget buildSuggestions(BuildContext context) {
+    return _packageList();
+  }
+}
+
+class AccessControlPanel extends ConsumerStatefulWidget {
+  const AccessControlPanel({super.key});
+
+  @override
+  ConsumerState createState() => _AccessControlPanelState();
+}
+
+class _AccessControlPanelState extends ConsumerState<AccessControlPanel> {
+  IconData _getIconWithAccessControlMode(AccessControlMode mode) {
+    return switch (mode) {
+      AccessControlMode.acceptSelected => Icons.adjust_outlined,
+      AccessControlMode.rejectSelected => Icons.block_outlined,
+    };
+  }
+
+  String _getTextWithAccessControlMode(AccessControlMode mode) {
+    return switch (mode) {
+      AccessControlMode.acceptSelected => appLocalizations.whitelistMode,
+      AccessControlMode.rejectSelected => appLocalizations.blacklistMode,
+    };
+  }
+
+  String _getTextWithAccessSortType(AccessSortType type) {
+    return switch (type) {
+      AccessSortType.none => appLocalizations.defaultText,
+      AccessSortType.installTime => appLocalizations.installTime,
+      AccessSortType.updateTime => appLocalizations.updateTime,
+    };
+  }
+
+  IconData _getIconWithProxiesSortType(AccessSortType type) {
+    return switch (type) {
+      AccessSortType.none => Icons.sort,
+      AccessSortType.installTime => Icons.install_mobile,
+      AccessSortType.updateTime => Icons.update,
+    };
+  }
+
+  List<Widget> _buildModeSetting() {
+    return generateSection(
+      plain: true,
+      isFirst: true,
+      title: appLocalizations.mode,
+      items: [
+        SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          scrollDirection: Axis.horizontal,
+          child: Consumer(
+            builder: (_, ref, _) {
+              final accessControlMode = ref.watch(
+                vpnSettingProvider.select((state) => state.accessControl.mode),
+              );
+              return Wrap(
+                spacing: 16,
+                children: [
+                  for (final item in AccessControlMode.values)
+                    SettingInfoCard(
+                      Info(
+                        label: _getTextWithAccessControlMode(item),
+                        iconData: _getIconWithAccessControlMode(item),
+                      ),
+                      isSelected: accessControlMode == item,
+                      onPressed: () {
+                        ref
+                            .read(vpnSettingProvider.notifier)
+                            .updateState(
+                              (state) =>
+                                  state.copyWith.accessControl(mode: item),
+                            );
+                      },
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildSortSetting() {
+    return generateSection(
+      plain: true,
+      title: appLocalizations.sort,
+      items: [
+        SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          scrollDirection: Axis.horizontal,
+          child: Consumer(
+            builder: (_, ref, _) {
+              final accessSortType = ref.watch(
+                vpnSettingProvider.select((state) => state.accessControl.sort),
+              );
+              return Wrap(
+                spacing: 16,
+                children: [
+                  for (final item in AccessSortType.values)
+                    SettingInfoCard(
+                      Info(
+                        label: _getTextWithAccessSortType(item),
+                        iconData: _getIconWithProxiesSortType(item),
+                      ),
+                      isSelected: accessSortType == item,
+                      onPressed: () {
+                        ref
+                            .read(vpnSettingProvider.notifier)
+                            .updateState(
+                              (state) =>
+                                  state.copyWith.accessControl(sort: item),
+                            );
+                      },
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildSourceSetting() {
+    return generateSection(
+      plain: true,
+      title: appLocalizations.source,
+      items: [
+        SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          scrollDirection: Axis.horizontal,
+          child: Consumer(
+            builder: (_, ref, _) {
+              final (isFilterSystemApp, isFilterNonInternetApp) = ref.watch(
+                vpnSettingProvider.select(
+                  (state) => (
+                    state.accessControl.isFilterSystemApp,
+                    state.accessControl.isFilterNonInternetApp,
+                  ),
+                ),
+              );
+              return Wrap(
+                spacing: 16,
+                children: [
+                  SettingTextCard(
+                    appLocalizations.systemApp,
+                    isSelected: isFilterSystemApp == false,
+                    onPressed: () {
+                      ref
+                          .read(vpnSettingProvider.notifier)
+                          .updateState(
+                            (state) => state.copyWith.accessControl(
+                              isFilterSystemApp: !isFilterSystemApp,
+                            ),
+                          );
+                    },
+                  ),
+                  SettingTextCard(
+                    appLocalizations.noNetworkApp,
+                    isSelected: isFilterNonInternetApp == false,
+                    onPressed: () {
+                      ref
+                          .read(vpnSettingProvider.notifier)
+                          .updateState(
+                            (state) => state.copyWith.accessControl(
+                              isFilterNonInternetApp: !isFilterNonInternetApp,
+                            ),
+                          );
+                    },
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _copyToClipboard() async {
+    await globalState.appController.safeRun(() {
+      final data = globalState.config.vpnProps.accessControl.toJson();
+      Clipboard.setData(ClipboardData(text: json.encode(data)));
+    });
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  Future<void> _pasteToClipboard() async {
+    await globalState.appController.safeRun(() async {
+      final data = await Clipboard.getData('text/plain');
+      final text = data?.text;
+      if (text == null) return;
+
+      AccessControl newAccessControl;
+      try {
+        newAccessControl = AccessControl.fromJson(
+          json.decode(text) as Map<String, Object?>,
+        );
+      } catch (_) {
+        final packages = text
+            .split(_packageSplitRegex)
+            .map((e) => e.trim())
+            .where((e) => _packageNameRegex.hasMatch(e))
+            .toList();
+
+        final currentState = ref.read(vpnSettingProvider).accessControl;
+        final isAccept = currentState.mode == AccessControlMode.acceptSelected;
+        final currentList = isAccept
+            ? currentState.acceptList
+            : currentState.rejectList;
+        final newList = {...currentList, ...packages}.toList();
+        final newManualList = {
+          ...currentState.manualList,
+          ...packages,
+        }.toList();
+
+        newAccessControl = currentState.copyWith(
+          acceptList: isAccept ? newList : currentState.acceptList,
+          rejectList: !isAccept ? newList : currentState.rejectList,
+          manualList: newManualList,
+        );
+      }
+
+      ref
+          .read(vpnSettingProvider.notifier)
+          .updateState(
+            (state) => state.copyWith(accessControl: newAccessControl),
+          );
+    });
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  List<Widget> _buildActionSetting() {
+    return generateSection(
+      plain: true,
+      title: appLocalizations.action,
+      items: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Wrap(
+            runSpacing: 16,
+            spacing: 16,
+            children: [
+              CommonChip(
+                avatar: const AppIcon(Icons.paste),
+                label: appLocalizations.clipboardImport,
+                onPressed: _pasteToClipboard,
+              ),
+              CommonChip(
+                avatar: const AppIcon(Icons.content_copy),
+                label: appLocalizations.clipboardExport,
+                onPressed: _copyToClipboard,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ScrollEdgeRise(
+      builder: (_, rise) => SingleChildScrollView(
+        padding: EdgeInsets.only(top: 8 + rise),
+        child: Padding(
+          padding: EdgeInsets.only(
+            bottom: 32 + MediaQuery.paddingOf(context).bottom,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ..._buildModeSetting(),
+              ..._buildSortSetting(),
+              ..._buildSourceSetting(),
+              ..._buildActionSetting(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
