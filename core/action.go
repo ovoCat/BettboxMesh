@@ -124,19 +124,6 @@ func handleAction(action *Action, result ActionResult) {
 		}
 		result.success(handleImportProfile(&params))
 		return
-	case downloadProfileMethod:
-		var params DownloadProfileParams
-		if err := json.Unmarshal([]byte(action.Data.(string)), &params); err != nil {
-			result.error(err)
-			return
-		}
-		headers, err := handleDownloadProfile(&params)
-		if err != nil {
-			result.error(err)
-			return
-		}
-		result.success(headers)
-		return
 	case decryptAgeConfigMethod:
 		paramsString := action.Data.(string)
 		var params DecryptAgeConfigParams
@@ -487,6 +474,10 @@ func handleAction(action *Action, result ActionResult) {
 			result.success(value)
 		})
 		return
+	case setStateMethod:
+		data := action.Data.(string)
+		handleSetState(data)
+		result.success(true)
 	case getTailscaleStatusMethod:
 		result.success(handleGetTailscaleStatus(action.Data))
 		return
@@ -496,10 +487,6 @@ func handleAction(action *Action, result ActionResult) {
 	case logoutTailscaleMethod:
 		result.success(handleLogoutTailscale(action.Data))
 		return
-	case setStateMethod:
-		data := action.Data.(string)
-		handleSetState(data)
-		result.success(true)
 	case flushFakeIPMethod:
 		result.success(handleFlushFakeIP())
 		return

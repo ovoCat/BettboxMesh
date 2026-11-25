@@ -86,11 +86,17 @@ app.*.map.json
 /assets/data/zash.zip
 /assets/data/BundleMRS.7z
 /test/private/
-# ---- Bettbox-T additions ----
-# go build output without extension
+
+# Local build & secrets
+*.jks
+*.keystore
+**/*.jks
+**/*.keystore
+android/local.properties
+/build/
+/libclash/
+/.dart_tool/
+/buildenv.ps1
 /core/core
 /core/*.exe
-# our own docs must be tracked (upstream ignores *.md)
-!/docs/*.md
-# local build helper script
-/buildenv.ps1
+*.apk

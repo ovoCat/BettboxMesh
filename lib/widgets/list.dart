@@ -5,7 +5,6 @@ import 'package:bett_box/enum/enum.dart';
 import 'package:bett_box/models/models.dart';
 import 'package:bett_box/state.dart';
 import 'package:bett_box/widgets/open_container.dart';
-import 'package:bett_box/widgets/scroll.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 
@@ -996,13 +995,7 @@ List<Widget> generateInfoSection({
 Widget generateListView(List<Widget> items, {bool shrinkWrap = false}) {
   return ScrollEdgeRise(
     builder: (context, rise) {
-      // 底部预留：导航页的悬浮导航栏覆盖在内容之上，
-      // 只算 MediaQuery 的 padding 不够——那是系统手势条的高度，
-      // 不含导航栏本身(84)。少了它，最后一个区块会被导航栏挡住，
-      // 表现就是「滑到底也看不全最后一条说明」。
-      final bottomPadding = FloatingBottomBarScope.has(context)
-          ? getFloatingBottomBarReserveHeight(context)
-          : MediaQuery.paddingOf(context).bottom;
+      final bottomPadding = MediaQuery.paddingOf(context).bottom;
 
       final cleanItems = items.where((widget) => widget is! Divider).toList();
       if (cleanItems.isEmpty) return const SizedBox.shrink();

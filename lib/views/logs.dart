@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:math';
 
 import 'package:bett_box/clash/clash.dart';
@@ -270,13 +270,10 @@ class _LogsViewState extends ConsumerState<LogsView>
   }
 
   @override
-    void didChangeAppLifecycleState(AppLifecycleState state) {
-    // 开启常驻日志时切后台不能停流，否则 onLog → stdout/debug.log 会断；
-    // 未开启时保持上游行为（切后台停止订阅，省电）。
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
-      if (!persistentLog) {
-        clashCore.stopLog();
-      }
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      clashCore.stopLog();
     } else if (state == AppLifecycleState.resumed) {
       _initLogs();
     }
@@ -285,10 +282,7 @@ class _LogsViewState extends ConsumerState<LogsView>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    // 常驻日志模式下不能 stopLog；否则恢复上游行为。
-    if (!persistentLog) {
-      clashCore.stopLog();
-    }
+    clashCore.stopLog();
     super.dispose();
   }
 

@@ -1353,35 +1353,27 @@ class _CredentialListViewState extends State<_CredentialListView>
       children: [
         ...generateSection(
           items: [
-            ListItem.next(
+            ListItem(
               leading: const Icon(Icons.vpn_key_outlined),
               title: Text(t('addByAuthKey')),
               subtitle: Text(t('addByAuthKeyDesc')),
-              delegate: NextDelegate(
-                title: t('addByAuthKey'),
-                builder: (_) => _PushOnBuild(
-                  builder: () async {
-                    await widget.master._addByAuthKey(t);
-                    await _refreshAuthStates();
-                    if (mounted) Navigator.of(context).pop();
-                  },
-                ),
-              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                await widget.master._addByAuthKey(t);
+                await _refreshAuthStates();
+                if (mounted) setState(() {});
+              },
             ),
-            ListItem.next(
+            ListItem(
               leading: const Icon(Icons.open_in_browser_outlined),
               title: Text(t('addByOAuth')),
               subtitle: Text(t('addByOAuthDesc')),
-              delegate: NextDelegate(
-                title: t('addByOAuth'),
-                builder: (_) => _PushOnBuild(
-                  builder: () async {
-                    await widget.master._addByOAuth(t);
-                    await _refreshAuthStates();
-                    if (mounted) Navigator.of(context).pop();
-                  },
-                ),
-              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                await widget.master._addByOAuth(t);
+                await _refreshAuthStates();
+                if (mounted) setState(() {});
+              },
             ),
           ],
         ),
@@ -1466,63 +1458,5 @@ class _CredentialListViewState extends State<_CredentialListView>
           ),
       ],
     );
-  }
-}
-
-/// 在 build 时执行一次异步动作再退出的占位组件。
-///
-/// NextDelegate 需要一个 Widget，但我们的动作是「弹对话框 → 完成后关闭」，
-/// 所以用一个触发式组件来承接。
-class _PushOnBuild extends StatefulWidget {
-  const _PushOnBuild({required this.builder});
-
-  final Future<void> Function() builder;
-
-  @override
-  State<_PushOnBuild> createState() => _PushOnBuildState();
-}
-
-class _PushOnBuildState extends State<_PushOnBuild> {
-  @override
-  void initState() {
-    super.initState();
-    // 必须等页面转场动画结束再弹对话框。
-    //
-    // 之前用 addPostFrameCallback，那是「本页首帧画完」就执行，
-    // 而此时 450ms 的 push 动画才刚起步。对话框的缩放淡入、
-    // IdleAutofocusMixin 触发的输入法滑出，会和转场动画同时跑，
-    // 三个动画叠在一起，每帧的 layout+paint 直接翻倍，表现为掉帧。
-    unawaited(_waitRouteIdle());
-  }
-
-  Future<void> _waitRouteIdle() async {
-    final route = ModalRoute.of(context);
-    // 先等本帧结束，确保 route 已挂载。
-    await WidgetsBinding.instance.endOfFrame;
-    if (!mounted) return;
-    // 再等转场动画播完（route.isCurrent 之后还要等 animation）。
-    final animation = route?.animation;
-    if (animation != null && animation.status != AnimationStatus.completed) {
-      final done = Completer<void>();
-      void listener(AnimationStatus status) {
-        if (status == AnimationStatus.completed ||
-            status == AnimationStatus.dismissed) {
-          animation.removeStatusListener(listener);
-          if (!done.isCompleted) done.complete();
-        }
-      }
-      animation.addStatusListener(listener);
-      await done.future;
-      if (!mounted) return;
-    }
-    // 留一帧给转场收尾，避免下一帧同时处理收尾和对话框。
-    await WidgetsBinding.instance.endOfFrame;
-    if (!mounted) return;
-    await widget.builder();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return const SizedBox.shrink();
   }
 }

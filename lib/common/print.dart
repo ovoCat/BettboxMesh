@@ -1,12 +1,13 @@
-import 'dart:io';
-
-import 'package:bett_box/common/constant.dart';
 import 'package:bett_box/enum/enum.dart';
 import 'package:bett_box/models/models.dart';
 import 'package:bett_box/state.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
 
 class CommonPrint {
   static CommonPrint? _instance;
+  static const _maxPending = 64;
+
+  final List<Log> _pending = [];
 
   CommonPrint._internal();
 
@@ -15,52 +16,45 @@ class CommonPrint {
     return _instance!;
   }
 
-  void log(String? text) => _dispatch(text, LogLevel.info);
+  void log(String? text, {String? module}) =>
+      _dispatch(text, LogLevel.info, module);
 
-  void debug(String? text) => _dispatch(text, LogLevel.debug);
+  void debug(String? text, {String? module}) =>
+      _dispatch(text, LogLevel.debug, module);
 
-  void warn(String? text) => _dispatch(text, LogLevel.warning);
+  void warn(String? text, {String? module}) =>
+      _dispatch(text, LogLevel.warning, module);
 
-  void error(String? text) => _dispatch(text, LogLevel.error);
+  void error(String? text, {String? module}) =>
+      _dispatch(text, LogLevel.error, module);
 
-  void _dispatch(String? text, LogLevel level) {
-    // 仅当打开 PERSISTENT_LOG 时才打到 stdout / 落盘：
-    //  - 不能用 debugPrint —— release 构建里它什么都不输出；
-    //  - 默认关闭时保持上游行为（日志只进内存环形缓冲）。
-    if (persistentLog) {
-      // ignore: avoid_print
-      print('[APP] $text');
-      if (persistLogToFile) {
-        writeDebugLog('APP', text, level: level);
-      }
-    }
+  void flush() {
+    if (_pending.isEmpty) return;
+    final logs = List.of(_pending);
+    _pending.clear();
+    logs.forEach(_emit);
+  }
+
+  void _dispatch(String? text, LogLevel level, String? module) {
+    final log = Log.app('$text', level: level, module: module);
+    debugPrint('[APP] ${log.raw}');
     if (!globalState.isInit) {
+      if (globalState.isService) return;
+      if (_pending.length >= _maxPending) _pending.removeAt(0);
+      _pending.add(log);
       return;
     }
-    globalState.appController.addLog(Log.app('$text', level: level));
+    _emit(log);
+  }
+
+  void _emit(Log log) {
+    final config = globalState.config;
+    if (!config.appSetting.openLogs) return;
+    final level = config.patchClashConfig.logLevel;
+    if (level == LogLevel.silent) return;
+    if (log.logLevel == LogLevel.debug && level != LogLevel.debug) return;
+    globalState.appController.addLog(log);
   }
 }
-
-/// 把一行日志追加到 `debug.log`。
-///
-/// 之所以要自己写文件而不是只靠 logcat：logcat 是环形缓冲，几分钟就被
-/// 系统日志冲掉；而且内核日志只有在「日志」页面打开时才会推送
-/// （见 core/hub.go 的 isStreamingLogs 判断），排查问题时经常拿不到。
-void writeDebugLog(String tag, String? text, {LogLevel level = LogLevel.info}) {
-  final path = debugLogPath;
-  if (path == null) {
-    return;
-  }
-  try {
-    final line =
-        '${DateTime.now().toIso8601String()} [${level.name}] [$tag] ${text ?? ''}\n';
-    File(path).writeAsStringSync(line, mode: FileMode.append, flush: false);
-  } catch (_) {
-    // 写盘失败不能影响主流程
-  }
-}
-
-/// 调试日志文件路径，由 `main()` 在确定应用目录后设置。
-String? debugLogPath;
 
 final commonPrint = CommonPrint();

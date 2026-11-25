@@ -4,7 +4,7 @@
  * 自定义分流远程规则集：@appshubcc https://github.com/appshubcc/bett-rules 
  */
 
-// @version 2026112003
+// @version 2026112502
 const Compatible_With_Bettbox = { ruleOptionsEnable: true };
 
 const ruleOptionsEnable = {
@@ -49,14 +49,35 @@ const prefixRules = [
 const directRules = [
   'RULE-SET,geolocation-cn,直连',
   'RULE-SET,category-ai-cn,直连',
-  'RULE-SET,apple_cn,直连',
   'RULE-SET,microsoft_cn,直连',
+  'RULE-SET,games_cn,直连',
+  'RULE-SET,games_download_cn,直连',
+  'RULE-SET,apple_cn,直连',
+  // 'RULE-SET,google_cn,直连',
 ];
 
 const excludeFilter =
   /群|返利|循环|官网|客服|网站|网址|获取|订阅|流量|到期|机场|下次|版本|官址|备用|过期|已用|联系|邮箱|工单|贩卖|通知|倒卖|防止|国内|地址|频道|电报|无法|说明|提示|访问|支持|教程|关注|更新|作者|加入|超时|收藏|优惠|福利|邀请|好友|失联|选择|剩余|公益|发布|DIZTNA|通路|登录|禁止|定时|渠道|牢记|永久|余额|阁下|本站|刷新|导航|建议|重置|以下|过滤|⚠️|@|t\.me\/\+|\bexpire\b|\bhttps?:\/\/|\.com|\btraffic\b/iu;
 
 const blockQuicRules = ['AND,((NETWORK,UDP),(DST-PORT,443)),REJECT'];
+
+const udpOptionalProxyTypes = new Set([
+  'ss',
+  'ssr',
+  'socks5',
+  'vmess',
+  'vless',
+  'trojan',
+  'wireguard',
+  'gost-relay',
+  'mieru',
+  'anytls',
+  'masque',
+  'trusttunnel',
+  'tailscale',
+  'zerotier',
+  'easytier',
+]);
 
 const directProxies = [
   {
@@ -195,12 +216,32 @@ const baseRuleProviders = {
     path: './ruleset/private_ip.mrs',
     'path-in-bundle': 'geo/geoip/private.mrs',
   },
+  games_cn: {
+    ...ruleProviderCommonDomain,
+    url: `${ruleSetBaseUrl}geosite/category-games@cn.mrs`,
+    path: './ruleset/category-games@cn.mrs',
+    'path-in-bundle': 'geo/geosite/category-games@cn.mrs',
+  },
+  games_download_cn: {
+    ...ruleProviderCommonDomain,
+    url: `${ruleSetBaseUrl}geosite/category-game-platforms-download@cn.mrs`,
+    path: './ruleset/category-game-platforms-download@cn.mrs',
+    'path-in-bundle': 'geo/geosite/category-game-platforms-download@cn.mrs',
+  },
   apple_cn: {
     ...ruleProviderCommonDomain,
     url: `${ruleSetBaseUrl}geosite/apple@cn.mrs`,
     path: './ruleset/apple@cn.mrs',
     'path-in-bundle': 'geo/geosite/apple@cn.mrs',
   },
+  ...(directRules.some((r) => r.includes(',google_cn,')) && {
+    google_cn: {
+      ...ruleProviderCommonDomain,
+      url: `${ruleSetBaseUrl}geosite/google@cn.mrs`,
+      path: './ruleset/google@cn.mrs',
+      'path-in-bundle': 'geo/geosite/google@cn.mrs',
+    },
+  }),
   microsoft_cn: {
     ...ruleProviderCommonDomain,
     url: `${ruleSetBaseUrl}geosite/microsoft@cn.mrs`,
@@ -236,6 +277,12 @@ const baseRuleProviders = {
     url: `${ruleSetBaseUrl}geosite/fakeip-filter.mrs`,
     path: './ruleset/fakeip-filter.mrs',
     'path-in-bundle': 'geo/geosite/fakeip-filter.mrs',
+  },
+  connectcheck: {
+    ...ruleProviderCommonDomain,
+    url: `${ruleSetBaseUrl}geosite/connectivity-check.mrs`,
+    path: './ruleset/connectivity-check.mrs',
+    'path-in-bundle': 'geo/geosite/connectivity-check.mrs',
   },
   cn: {
     ...ruleProviderCommonDomain,
@@ -289,13 +336,14 @@ const baseGroups = [
 ];
 
 const rejectGroupProxies = ['REJECT', 'PASS', '直连', '默认代理'];
+const nonHkRegionPriority = ['台湾', '新加坡', '日本', '美国'];
 
 const serviceConfigs = [
   ...baseGroups,
   {
     name: 'AI',
     baseOption: selectBaseOption,
-    defaultSelected: '美国',
+    defaultSelected: nonHkRegionPriority,
     providers: {
       ai: {
         ...ruleProviderCommonDomain,
@@ -347,6 +395,7 @@ const serviceConfigs = [
   {
     name: 'Google',
     baseOption: selectBaseOption,
+    defaultSelected: nonHkRegionPriority,
     providers: {
       google: {
         ...ruleProviderCommonDomain,
@@ -629,6 +678,16 @@ Compatible_With_Bettbox.policyGroupOptions = serviceConfigs.map((svc) => svc.nam
 
 const customRoutes = typeof bettboxRoutes !== 'undefined' && Array.isArray(bettboxRoutes) ? bettboxRoutes : [];
 const groupOrder = typeof bettboxOrder !== 'undefined' && Array.isArray(bettboxOrder) ? bettboxOrder : [];
+const builtinRuleDeps = [
+  ['AI', 'Google'],
+  ['AI', 'Microsoft'],
+  ['YouTube', 'Google'],
+  ['FCM', 'Google'],
+  ['GitHub', 'Microsoft'],
+];
+const customRuleDeps =
+  typeof bettboxRuleDeps !== 'undefined' && Array.isArray(bettboxRuleDeps) ? bettboxRuleDeps : [];
+const allRuleDeps = [...builtinRuleDeps, ...customRuleDeps];
 const builtInReservedNames = [
   'GLOBAL',
   'DIRECT',
@@ -837,13 +896,20 @@ function filterAndNormalizeProxies(config) {
     throw new Error('配置文件中未找到任何代理节点');
   }
 
-  if (ruleOptionsEnable.优先连接IPv6节点) {
-    return filteredProxies.map((proxy) =>
-      proxy['ip-version'] === 'ipv6-prefer' ? proxy : { ...proxy, 'ip-version': 'ipv6-prefer' },
-    );
-  }
-
-  return filteredProxies;
+  const preferIpv6 = ruleOptionsEnable.优先连接IPv6节点;
+  return filteredProxies.map((proxy) => {
+    const type = String(proxy.type ?? '').toLowerCase();
+    const needsUdp =
+      proxy.udp == null &&
+      (udpOptionalProxyTypes.has(type) || (type === 'snell' && Number(proxy.version) >= 3));
+    const needsIpv6 = preferIpv6 && proxy['ip-version'] !== 'ipv6-prefer';
+    if (!needsUdp && !needsIpv6) return proxy;
+    return {
+      ...proxy,
+      ...(needsUdp && { udp: true }),
+      ...(needsIpv6 && { 'ip-version': 'ipv6-prefer' }),
+    };
+  });
 }
 
 /**
@@ -910,24 +976,27 @@ function buildRegionGroups(filteredProxies) {
     }
   }
 
-  const generatedRegionGroups = sortByGroupOrder(allRegionDefinitions)
-    .filter((r) => regionGroups[r.name].length > 0 && (generateRateGroupEnabled || !rateRegionDefinitions.includes(r)))
-    .flatMap((r) =>
-      createRegionGroup(
-        r.name,
-        r.icon,
-        regionGroups[r.name],
-        activeRegionDefinitions.includes(r)
-          ? userNodeNames.filter((name) => Compatible_With_Bettbox.nodeRegions[name].includes(r.name))
-          : undefined,
-      ),
-    );
+  const regionDefs = [
+    ...allRegionDefinitions.filter(
+      (r) => regionGroups[r.name].length > 0 && (generateRateGroupEnabled || !rateRegionDefinitions.includes(r)),
+    ),
+    ...(otherProxies.length > 0
+      ? [{ name: '其他节点', icon: `${iconBaseUrl}common/WorldMap.svg`, other: true }]
+      : []),
+  ];
 
-  if (otherProxies.length > 0) {
-    generatedRegionGroups.push(...createRegionGroup('其他节点', `${iconBaseUrl}common/WorldMap.svg`, otherProxies));
-  }
-
-  return generatedRegionGroups;
+  return sortByGroupOrder(regionDefs).flatMap((r) =>
+    r.other
+      ? createRegionGroup(r.name, r.icon, otherProxies)
+      : createRegionGroup(
+          r.name,
+          r.icon,
+          regionGroups[r.name],
+          activeRegionDefinitions.includes(r)
+            ? userNodeNames.filter((name) => Compatible_With_Bettbox.nodeRegions[name].includes(r.name))
+            : undefined,
+        ),
+  );
 }
 
 /**
@@ -994,19 +1063,101 @@ function buildCustomServices(reservedNames) {
 /**
  * 按用户保存的策略组顺序排序，未在顺序中的策略组紧随前一项之后
  */
-function sortByGroupOrder(services) {
-  if (!groupOrder.length) return services;
+const groupOrderKeys = (() => {
+  if (!groupOrder.length) return null;
+
+  const serviceNames = serviceConfigs.map((svc) => svc.name);
+  const anchorIndex = serviceNames.indexOf('AdBlock');
+  serviceNames.splice(
+    anchorIndex < 0 ? serviceNames.length : anchorIndex,
+    0,
+    ...customRoutes.map((route) => route?.name).filter((name) => typeof name === 'string'),
+  );
+  const names = [...serviceNames, ...allRegionDefinitions.map((region) => region.name)];
 
   const rank = new Map(groupOrder.map((name, index) => [name, index]));
+  const keys = new Map();
   let last = -1;
+  names.forEach((name, index) => {
+    const order = rank.get(name);
+    if (order !== undefined) last = order;
+    if (typeof name === 'string' && !keys.has(name)) keys.set(name, [order ?? last + 0.5, index]);
+  });
+
+  const serviceRanks = serviceNames
+    .map((name) => rank.get(name))
+    .filter((order) => order !== undefined);
+  const directOrder = rank.get('直连');
+  const directFallback = serviceRanks.length ? Math.max(...serviceRanks) + 0.75 : -0.25;
+  keys.set('直连', [directOrder ?? directFallback, names.length]);
+
+  const otherOrder = rank.get('其他节点');
+  keys.set('其他节点', [otherOrder ?? groupOrder.length, names.length + 1]);
+  return keys;
+})();
+
+function sortByGroupOrder(services) {
+  if (!groupOrderKeys) return services;
+
+  const keyOf = (name) =>
+    groupOrderKeys.get(name) ?? groupOrderKeys.get(name.replace(/-自动选择$/, '')) ?? [Infinity, Infinity];
   return services
-    .map((svc, index) => {
-      const order = rank.get(svc.name) ?? rank.get(svc.name.replace(/-自动选择$/, ''));
-      if (order !== undefined) last = order;
-      return { svc, index, key: order !== undefined ? order : last + 0.5 };
-    })
-    .sort((a, b) => a.key - b.key || a.index - b.index)
+    .map((svc, index) => ({ svc, index, key: keyOf(svc.name) }))
+    .sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.index - b.index)
     .map((entry) => entry.svc);
+}
+
+function sortRuleServices(services) {
+  if (services.length <= 1) return services;
+
+  const indexByName = new Map(services.map((svc, index) => [svc.name, index]));
+  const adj = Array.from({ length: services.length }, () => new Set());
+  const indegree = new Array(services.length).fill(0);
+
+  for (const dep of allRuleDeps) {
+    if (!Array.isArray(dep) || dep.length < 2) continue;
+    const from = indexByName.get(dep[0]);
+    const to = indexByName.get(dep[1]);
+    if (from === undefined || to === undefined || from === to || adj[from].has(to)) continue;
+    adj[from].add(to);
+    indegree[to]++;
+  }
+
+  const priority = Array.from({ length: services.length }, (_, index) => index);
+  for (let pass = 0; pass < services.length; pass++) {
+    let changed = false;
+    for (let u = 0; u < services.length; u++) {
+      for (const v of adj[u]) {
+        if (priority[v] < priority[u]) {
+          priority[u] = priority[v];
+          changed = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+
+  const placed = new Array(services.length).fill(false);
+  const result = [];
+  for (let count = 0; count < services.length; count++) {
+    let next = -1;
+    for (let i = 0; i < services.length; i++) {
+      if (!placed[i] && indegree[i] === 0) {
+        if (next === -1 || priority[i] < priority[next]) next = i;
+      }
+    }
+    if (next === -1) {
+      for (let i = 0; i < services.length; i++) {
+        if (!placed[i] && (next === -1 || priority[i] < priority[next])) next = i;
+      }
+    }
+    placed[next] = true;
+    result.push(services[next]);
+    for (const target of adj[next]) {
+      indegree[target]--;
+    }
+  }
+  return result;
 }
 
 /**
@@ -1093,17 +1244,27 @@ function buildFunctionalGroups(filteredProxies, generatedRegionGroups) {
     ...builtInReservedNames,
     ...allProxiesNames,
   ]);
-  const services = [...serviceConfigs];
-  const anchorIndex = services.findIndex((svc) => svc.name === 'AdBlock');
-  services.splice(anchorIndex < 0 ? services.length : anchorIndex, 0, ...buildCustomServices(reservedNames));
+  const builtinServices = serviceConfigs.filter((svc) => ruleOptionsEnable[svc.name]);
+  const allServices = [...builtinServices];
+  const anchorIndex = allServices.findIndex((svc) => svc.name === 'AdBlock');
+  allServices.splice(anchorIndex < 0 ? allServices.length : anchorIndex, 0, ...buildCustomServices(reservedNames));
+  const orderedServices = sortByGroupOrder(allServices);
 
-  for (const svc of sortByGroupOrder(services)) {
-    if (!svc.custom && !ruleOptionsEnable[svc.name]) continue;
+  const ruleServices = [
+    ...sortRuleServices(orderedServices.filter((svc) => svc.priority || svc.reject)),
+    ...sortRuleServices(orderedServices.filter((svc) => !svc.priority && !svc.reject)),
+  ];
 
-    (svc.priority ? priorityRules : functionalRules).push(...(svc.rules || []));
+  for (const svc of ruleServices) {
+    (svc.priority || svc.reject ? priorityRules : functionalRules).push(...(svc.rules || []));
     functionalIpRules.push(...(svc.ipRules || []));
     Object.assign(finalRuleProviders, svc.providers || {});
+    if (!svc.reject && !svc.direct) {
+      for (const rule of svc.rules || []) dnsPolicyGroups.push([rule.split(',')[1], svc.name]);
+    }
+  }
 
+  for (const svc of orderedServices) {
     let groupProxies = [];
     if (svc.includeAll) {
       groupProxies = [...allProxiesNames];
@@ -1121,13 +1282,12 @@ function buildFunctionalGroups(filteredProxies, generatedRegionGroups) {
         ];
     }
 
-    const selected =
-      svc.defaultSelected !== undefined && (!svc.custom || groupProxies.includes(svc.defaultSelected))
-        ? svc.defaultSelected
-        : undefined;
-    if (!svc.reject && !svc.direct) {
-      for (const rule of svc.rules || []) dnsPolicyGroups.push([rule.split(',')[1], svc.name]);
-    }
+    const defaultCandidates = Array.isArray(svc.defaultSelected)
+      ? svc.defaultSelected
+      : svc.defaultSelected !== undefined
+        ? [svc.defaultSelected]
+        : [];
+    const selected = defaultCandidates.find((name) => groupProxies.includes(name));
     functionalGroups.push({
       ...svc.baseOption,
       name: svc.name,
@@ -1603,6 +1763,8 @@ function simplifyDomainPolicy(policy) {
  * 构建 DNS 与 hosts：保留私有 DNS、节点域名 policy/fake-ip-filter 与命中节点域名的订阅 hosts，并按 hosts 改写节点 server。
  */
 function buildDnsAndHostsConfig(config, filteredProxies, dnsPolicyGroups) {
+  const minimalModeEnabled = ruleOptionsEnable.极简国内外分流模式;
+
   const originalDnsConfig = config.dns || {};
 
   const proxyServerNameservers = originalDnsConfig['proxy-server-nameserver'] || [];
@@ -1699,6 +1861,8 @@ function buildDnsAndHostsConfig(config, filteredProxies, dnsPolicyGroups) {
       'rule-set:cn',
       'rule-set:private',
       'rule-set:fakeip_filter',
+      'rule-set:connectcheck',
+      ...(minimalModeEnabled ? [] : ruleOptionsEnable.FCM ? ['rule-set:googlefcm'] : []),
       ...proxyFakeIpFilter,
     ],
     'fake-ip-range': '198.18.0.1/15',
@@ -1787,6 +1951,7 @@ function main(config) {
     'RULE-SET,private_ip,DIRECT',
     ...functionalIpRules,
     'MATCH,默认代理',
+    'NETWORK,UDP,REJECT',
   ];
 
   return newConfig;

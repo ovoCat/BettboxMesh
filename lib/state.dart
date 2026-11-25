@@ -81,6 +81,7 @@ class GlobalState {
   Timer? _backgroundCoreGcTimer;
   Timer? _backgroundCleanupTimer;
   final Lock _scriptEvaluateLock = Lock();
+  int _relayStamp = 0;
   bool isInit = false;
 
   bool get hasMediaUnlockWidget {
@@ -129,6 +130,7 @@ class GlobalState {
   set appController(AppController appController) {
     _appController = appController;
     isInit = true;
+    commonPrint.flush();
   }
 
   GlobalState._internal();
@@ -209,7 +211,7 @@ class GlobalState {
         return digest.toString();
       });
     } catch (e) {
-      commonPrint.warn('Failed to calculate core SHA256: $e');
+      commonPrint.warn('Core hash failed: $e');
       return null;
     }
   }
@@ -383,7 +385,7 @@ class GlobalState {
         appController.updateTraffic,
       ]);
     } catch (e) {
-      commonPrint.warn('Sync VPN state error: $e');
+      commonPrint.warn('Sync VPN state failed: $e');
     }
   }
 
@@ -787,7 +789,7 @@ class GlobalState {
         refresh: refresh,
       );
     } catch (e) {
-      commonPrint.error('Script execution failed: $e');
+      commonPrint.error('Execution failed: $e', module: 'Script');
       showNotifier('${appLocalizations.profileParseErrorDesc}: $e');
       if (!managed) return '';
       if (ManagedScript.syncedVersion(config.managedProps) != null) {
@@ -809,9 +811,7 @@ class GlobalState {
       '$relayPath${separator}cache-${profile.id}-managed.json',
     );
     if (!await cacheFile.exists()) return '';
-    final file = File(
-      '$relayPath${separator}scripted-${DateTime.now().microsecondsSinceEpoch}.json',
-    );
+    final file = File('$relayPath${separator}scripted-$_nextRelayStamp.json');
     await cacheFile.copy(file.path);
     return file.path;
   }
@@ -825,14 +825,16 @@ class GlobalState {
       );
       return await writeScriptedConfig(profile, fallback, managed: true);
     } catch (e) {
-      commonPrint.error('Bundled managed script execution failed: $e');
+      commonPrint.error('Bundled managed script failed: $e', module: 'Script');
       return '';
     }
   }
 
   Future<void> validateScript(Script script, {required bool managed}) async {
     Profile? profile = config.currentProfile;
-    if (profile == null || profile.bundle != null || !await profile.check()) {
+    if (profile == null ||
+        (profile.bundle != null && (managed || profile.isManaged)) ||
+        !await profile.check()) {
       profile = null;
       for (final item in config.profiles) {
         if (item.bundle == null && await item.check()) {
@@ -842,7 +844,7 @@ class GlobalState {
       }
     }
     if (profile == null) {
-      final stamp = DateTime.now().microsecondsSinceEpoch;
+      final stamp = _nextRelayStamp;
       final relayPath = await appPath.relayPath;
       final separator = Platform.pathSeparator;
       final input = File('$relayPath${separator}validate-in-$stamp.json');
@@ -913,7 +915,7 @@ class GlobalState {
     bool refresh = false,
     bool cache = true,
   }) async {
-    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final stamp = _nextRelayStamp;
     final relayPath = await appPath.relayPath;
     final separator = Platform.pathSeparator;
     final file = File('$relayPath${separator}scripted-$stamp.json');
@@ -974,6 +976,31 @@ class GlobalState {
         }
       }
     });
+  }
+
+  Future<String> writeExpandedConfig(
+    Profile profile, {
+    bool refresh = false,
+  }) async {
+    final relayPath = await appPath.relayPath;
+    final file = File(
+      '$relayPath${Platform.pathSeparator}profile-$_nextRelayStamp.json',
+    );
+    await _scriptEvaluateLock.synchronized(
+      () => _exportProfileConfig(
+        profile,
+        file.path,
+        managed: true,
+        refresh: refresh,
+      ),
+    );
+    return file.path;
+  }
+
+  int get _nextRelayStamp {
+    final now = DateTime.now().microsecondsSinceEpoch;
+    _relayStamp = now > _relayStamp ? now : _relayStamp + 1;
+    return _relayStamp;
   }
 
   Future<void> _sweepRelay(String relayPath) async {
@@ -1184,6 +1211,7 @@ class GlobalState {
       'select-global': profile.selectedMap['GLOBAL'] == null,
       // Tailscale：core 侧会把它展开成 tailscale 出站 + tailnet 规则
       // + MagicDNS 策略，见 core/tailscale_patch.go。
+      // 未选择任何凭证且无 auth-key 时不启动孤立节点，避免弹出无法归属的登录链接。
       'tailscale':
           (TailscaleConfigManager.instance.loaded &&
               TailscaleConfigManager.instance.activeProfile == null &&
@@ -1306,17 +1334,7 @@ class DashboardRefreshManager {
 
   Future<bool> _isActive() async {
     if (system.isDesktop) {
-      final isPinned = globalState.config.windowProps.isPinned;
-      if (isPinned) return true;
-      final visible = await window?.isVisible;
-      if (visible == false) {
-        return false;
-      }
-      final minimized = await window?.isMinimized ?? false;
-      if (minimized) {
-        return false;
-      }
-      return true;
+      return !globalState.backgroundMode.value;
     }
 
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
@@ -1405,12 +1423,33 @@ class DetectionState {
     return _instance!;
   }
 
+  static String protectedCountryCode([Locale? locale]) {
+    final effective =
+        locale ??
+        utils.getLocaleForString(globalState.config.appSetting.locale) ??
+        PlatformDispatcher.instance.locale;
+    return switch (effective.languageCode.toLowerCase()) {
+      'ja' => 'JP',
+      'ko' => 'KR',
+      'ru' => 'RU',
+      'fa' => 'IR',
+      _ => 'CN',
+    };
+  }
+
+  static IpInfo protectedIpInfo([Locale? locale]) => IpInfo(
+    ip: '10.0.0.108',
+    countryCode: protectedCountryCode(locale),
+    country: 'Protected Mode',
+    asn: 'AS 166188',
+  );
+
   bool get isIpMasked => _isIpMasked;
   IpInfo? get rawIpInfo => _rawIpInfo;
 
   IpInfo? _maskIpInfo(IpInfo? ipInfo) {
     if (ipInfo == null) return null;
-    return _isIpMasked ? ipInfo.copyWith(ip: '*** *** *** ***') : ipInfo;
+    return _isIpMasked ? protectedIpInfo() : ipInfo;
   }
 
   void toggleIpPrivacy() {

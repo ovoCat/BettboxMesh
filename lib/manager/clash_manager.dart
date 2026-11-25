@@ -55,9 +55,7 @@ class _ClashContainerState extends ConsumerState<ClashManager>
         unawaited(
           globalState.appController
               .handleChangeProfile(hardRestart: fullRestart)
-              .catchError((Object error, StackTrace stackTrace) {
-                commonPrint.error('Profile change failed: $error');
-              }),
+              .catchError((Object _) {}),
         );
       }
     });
@@ -147,21 +145,6 @@ class _ClashContainerState extends ConsumerState<ClashManager>
   @override
   void onLog(Log log) {
     globalState.appController.addLog(log);
-    // 内核日志默认只进内存环形缓冲，导出才能看到。开关打开时额外做两件事：
-    //  1. 写 stdout —— 用 print 而不是 debugPrint（release 里后者是空操作），
-    //     这样 `adb logcat -s flutter` 能实时看到；
-    //  2. 写 debug.log —— 不依赖 logcat 缓冲区，事后可取完整日志。
-    //
-    // 注意：module 只在 payload 有 `[XXX]` 前缀时才解析得到，
-    // 健康检查一类日志没有该前缀，直接拼 module 会打出 `[null]`。
-    if (persistentLog) {
-      final tag = log.module == null ? 'CORE' : 'CORE/${log.module}';
-      // ignore: avoid_print
-      print('[$tag] ${log.payload}');
-      if (persistLogToFile) {
-        writeDebugLog(tag, log.payload);
-      }
-    }
     if (log.logLevel == LogLevel.error) {
       _notifyError(log.payload);
     }
