@@ -33,7 +33,8 @@ class TailscaleListView extends ConsumerStatefulWidget {
   ConsumerState<TailscaleListView> createState() => _TailscaleListViewState();
 }
 
-class _TailscaleListViewState extends ConsumerState<TailscaleListView> {
+class _TailscaleListViewState extends ConsumerState<TailscaleListView>
+    with WidgetsBindingObserver {
   Timer? _statusTimer;
   TailscaleNodeStatus? _status;
   bool _statusLoading = false;
@@ -50,6 +51,9 @@ class _TailscaleListViewState extends ConsumerState<TailscaleListView> {
   /// 当前这次状态查询的完成信号，手动刷新撞上轮询时用它等一等。
   Completer<void>? _pollingDone;
 
+  /// 进入后台的时刻，用于浏览器授权返回后立即刷新状态（过滤输入法等短暂切换）。
+  DateTime? _pausedAt;
+
   TailscaleConfig get _config => TailscaleConfigManager.instance.config;
 
   /// 给「不依赖 build 上下文」的地方（如手动刷新的提示）取文案用。
@@ -61,6 +65,7 @@ class _TailscaleListViewState extends ConsumerState<TailscaleListView> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // 必须先加载：manager 是单例但不会自动读盘。
     // 不加载的话 _config 是默认值(enable=false)、_profiles 为空，
     // 表现就是「已保存的凭证全都不见了」+「开关状态回退」。
@@ -70,7 +75,27 @@ class _TailscaleListViewState extends ConsumerState<TailscaleListView> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _pausedAt = DateTime.now();
+      return;
+    }
+    if (state != AppLifecycleState.resumed) return;
+    final pausedAt = _pausedAt;
+    _pausedAt = null;
+    if (pausedAt == null) return;
+    if (DateTime.now().difference(pausedAt) < const Duration(seconds: 2)) {
+      return;
+    }
+    if (_config.enable &&
+        TailscaleConfigManager.instance.activeProfile != null) {
+      unawaited(_refreshStatus(force: true));
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _statusTimer?.cancel();
     super.dispose();
   }
@@ -88,7 +113,8 @@ class _TailscaleListViewState extends ConsumerState<TailscaleListView> {
 
   void _startPolling() {
     _statusTimer?.cancel();
-    if (!_config.enable) {
+    if (!_config.enable ||
+        TailscaleConfigManager.instance.activeProfile == null) {
       return;
     }
     _statusTimer = Timer.periodic(
@@ -197,6 +223,10 @@ class _TailscaleListViewState extends ConsumerState<TailscaleListView> {
   }
 
   Future<void> _connect() async {
+    if (TailscaleConfigManager.instance.activeProfile == null) {
+      globalState.showNotifier(_tr('credentialNoneDesc'));
+      return;
+    }
     try {
       final error = await clashCore.startTailscale(name: _config.proxyName);
       if (!mounted) return;
@@ -402,6 +432,11 @@ class _TailscaleListViewState extends ConsumerState<TailscaleListView> {
       'tailscale-$id',
       TailscaleLoginMethod.authKey,
     );
+    final profile = TailscaleConfigManager.instance.activeProfile;
+    if (profile != null && profile.id == id) {
+      await _activateProfile(profile);
+    }
+    if (!mounted) return;
     globalState.showNotifier(t('credentialAdded'));
   }
 
@@ -544,6 +579,14 @@ class _TailscaleListViewState extends ConsumerState<TailscaleListView> {
     final active = TailscaleConfigManager.instance.activeProfile;
     if (active != null) {
       await _activateProfile(active);
+    } else {
+      _status = null;
+      _hadProfile = false;
+      _loginMethod = TailscaleLoginMethod.unknown;
+      await _save(
+        _config.copyWith(authKey: '', stateDir: 'tailscale', controlUrl: ''),
+        skipAutoLogout: true,
+      );
     }
   }
 
@@ -798,6 +841,15 @@ class _TailscaleListViewState extends ConsumerState<TailscaleListView> {
   }
 
   List<Widget> _buildStatusItems(String Function(String key) t) {
+    if (TailscaleConfigManager.instance.activeProfile == null) {
+      return [
+        ListItem(
+          leading: const Icon(Icons.info_outline),
+          title: Text(t('credentialNone')),
+          subtitle: Text(t('credentialNoneDesc')),
+        ),
+      ];
+    }
     final status = _status;
     if (status == null) {
       return [
@@ -1044,6 +1096,10 @@ const Map<String, Map<String, String>> _strings = {
   'credentialSaved': {'en': 'Saved', 'zh': '已保存'},
   'credentialCurrent': {'en': 'Current', 'zh': '当前凭证'},
   'credentialNone': {'en': 'None selected', 'zh': '未选择'},
+  'credentialNoneDesc': {
+    'en': 'Add or select a credential in "Manage credentials" above first',
+    'zh': '请先在上方「管理登录凭证」中添加或选择一个凭证',
+  },
   'addCredential': {'en': 'Manage credentials', 'zh': '管理登录凭证'},
   'addCredentialDesc': {
     'en': 'Add, switch or remove Tailscale logins',

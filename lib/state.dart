@@ -224,12 +224,13 @@ class GlobalState {
   }
 
   Future<void> init({bool deferBackup = false}) async {
-    final (_, _, _, loadedConfig) = await (
+    final (_, _, _, _, loadedConfig) = await (
       PackageInfo.fromPlatform().then((value) => packageInfo = value),
       system.isAndroid
           ? app.isAndroidTV().then((value) => _isAndroidTV = value)
           : Future<void>.value(),
       ManagedScript.loadBundledVersion(),
+      TailscaleConfigManager.instance.ensureLoaded(),
       preferences.getConfig(deferBackup: deferBackup),
     ).wait;
     config =
@@ -702,6 +703,7 @@ class GlobalState {
     required ClashConfig patchConfig,
     Profile? profile,
   }) async {
+    await TailscaleConfigManager.instance.ensureLoaded();
     final targetProfile = profile ?? config.currentProfile;
     final params = SetupParams(
       selectedMap: targetProfile?.selectedMap ?? {},
@@ -1182,7 +1184,12 @@ class GlobalState {
       'select-global': profile.selectedMap['GLOBAL'] == null,
       // Tailscale：core 侧会把它展开成 tailscale 出站 + tailnet 规则
       // + MagicDNS 策略，见 core/tailscale_patch.go。
-      'tailscale': tailscaleConfig.toPatchJson(),
+      'tailscale':
+          (TailscaleConfigManager.instance.loaded &&
+              TailscaleConfigManager.instance.activeProfile == null &&
+              !tailscaleConfig.hasAuthKey)
+          ? tailscaleConfig.copyWith(enable: false).toPatchJson()
+          : tailscaleConfig.toPatchJson(),
     };
   }
 
@@ -1196,7 +1203,11 @@ class GlobalState {
   /// 注意：route-address 为空表示「0.0.0.0/0 全量路由」，此时不能往里
   /// 追加，否则会把全量路由变成只有 tailnet 的几条规则。
   Tun _withTailnetRoutes(Tun tun, {required bool includeIpv6}) {
-    if (!tailscaleConfig.enable || !tailscaleConfig.routeRules) {
+    if (!tailscaleConfig.enable ||
+        !tailscaleConfig.routeRules ||
+        (TailscaleConfigManager.instance.loaded &&
+            TailscaleConfigManager.instance.activeProfile == null &&
+            !tailscaleConfig.hasAuthKey)) {
       return tun;
     }
     final routeAddress = tun.routeAddress;
