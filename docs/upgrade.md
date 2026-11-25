@@ -6,7 +6,7 @@
 
 ## 1. 仓库现状
 
-- 基线：上游 Bettbox `1.19.9+2026112101`
+- 基线：上游 Bettbox `1.20.1+2026112501`
 - remote `upstream` → `https://github.com/appshubcc/Bettbox.git`
 
 ```bash
@@ -93,6 +93,55 @@ git add -A && git commit
 | `lib/common/constant.dart` `lib/common/print.dart`<br>`lib/manager/clash_manager.dart` `lib/views/logs.dart` `lib/main.dart` | **可选增强** | **可以直接接受上游版本**（见第 3 节），我们的功能只是暂时关闭 |
 | `lib/models/generated/*.g.dart` | **生成产物** | 不要手改，合并后重跑 `dart run build_runner build` |
 
+### 2.5 README 类文件属于定制内容，不能直接接受上游
+
+**1.20.1 升级时踩过**：`README.md` 和 `readme/` 目录被当作纯上游文件覆盖，
+导致所有定制内容丢失：
+
+| 丢失项 | 后果 |
+| --- | --- |
+| 标题 `BettboxMesh` | 变回 `Bettbox` |
+| 「相对上游的差异」章节 | 整个消失 |
+| 「文档索引」章节 | 整个消失 |
+| 项目热度指向 | 从 `ovoCat/BettboxMesh` 变回上游 |
+| 截图 `tail_cn.png` | 换成上游的 `home.jpg` |
+| 多语言版本 | 已删的 fa/ja/ko/ru 被恢复 |
+
+**规律**：这类「文档型资产」不会引起编译错误，所以最容易被忽略。
+判断标准是 —— **凡是本项目的定制内容，都不属于「可直接接受上游」的范畴**。
+
+升级时必须逐项确认：
+
+```
+README.md                      定制（标题、差异说明、文档索引、项目热度）
+readme/README_en.md            定制
+readme/README_*.md             本项目只保留 en + zh，其余应删除
+.github/ISSUE_TEMPLATE/*.yml   定制（链接指向本仓库）
+lib/views/about.dart           定制（双气泡墙）
+android/app/build.gradle.kts   定制（applicationId）
+res/values*/strings.xml        定制（显示名）
+```
+
+**恢复方法**（历史里一定有提交前的版本）：
+
+```bash
+# 找到保留定制内容的提交
+git log --oneline -- README.md
+
+# 从该提交恢复
+git show <commit>:README.md > README.md
+git show <commit>:readme/README_en.md > readme/README_en.md
+```
+
+**升级后必查**：
+
+```bash
+# 关键字应全部命中
+Select-String -Path README.md -Pattern "BettboxMesh|Tailscale"
+# readme/ 应只剩两个文件
+Get-ChildItem readme
+```
+
 ---
 
 ## 3. 可选的调试增强（`--dart-define`）
@@ -121,7 +170,7 @@ flutter build apk --release --target-platform android-arm64 --split-per-abi \
 ## 4. 升级后必做的验证
 
 ```bash
-# 0) 工具链：1.19.9 起要求 Dart >= 3.14.0（Flutter >= 3.50.1）
+# 0) 工具链：需要 Flutter >= 3.50.1（pubspec 约束 Dart >= 3.13.0）
 #    版本不够会在 pub get 直接失败：
 #    "Because bett_box requires SDK version >=3.14.0 <4.0.0"
 dart --version
@@ -207,7 +256,7 @@ flutter build apk --release --target-platform android-arm64 --split-per-abi \
 
 ---
 
-## 7. 四个必须知道的陷阱
+## 7. 七个必须知道的陷阱
 
 这些都已踩过，写下来避免以后（含上游合并时）重犯。
 
@@ -299,3 +348,68 @@ VPN 开启 → 内核 setupConfig → 创建 tailscale 出站 → tsnet 启动
 
 这个坑的教训：**配置类功能必须验证「重启后还在不在」**。
 只在「添加即用」的路径上测试，会漏掉整类问题。
+
+### 7.5 冷启动路径必须加载配置
+
+1.20.1 修过的一个 BUG：**从控制中心快捷开关冷启动时 Tailscale 不运行**。
+
+根因是 `TailscaleConfigManager.ensureLoaded()` 只在打开 Tailscale 设置页时调用。
+后台服务入口 `_service()` 走的是另一条路径：
+
+```
+_service() → globalState.init() → getSetupParams() → getClashConfig()
+  → tailscaleConfig.toPatchJson()
+```
+
+此时 manager 还是内存默认值（`enable = false`），内核收到 `enable: false`，
+VPN 正常启动但没有注入 Tailscale 出站，Tailscale 页显示「未配置」。
+
+**修复**：在 `globalState.init()` 的并行初始化列表和 `buildSetupParams()`
+开头都调用 `ensureLoaded()` 兜底。
+
+**推广到其他功能**：任何「配置持久化 + 分多条启动路径」的功能，都要确认
+**每条路径都加载了配置**，而不是只在 UI 页面里加载。
+
+### 7.6 Rust 组件编译失败时构建不报错
+
+`plugins/code_forge` 通过 cargokit 编译 Rust。失败时 **`flutter build apk`
+退出码仍是 0**，但 APK 缺少 `libcode_forge.so`。
+
+常见原因：`LIBCLANG_PATH` 未设置（rquickjs 的 bindgen 依赖它）。
+
+**每次出包后必查**：
+
+```bash
+jar tf <apk> | grep libcode_forge
+```
+
+缺这个库的包比正常包小约 1.25 MB。危险之处在于**没有任何报错中断构建**。
+
+> 升级上游时 `.gitignore` 也可能被覆盖，导致 `buildenv.ps1`、`core/core`
+> 这类本地文件被带进提交。合并后务必 `git status` 检查一遍。
+
+### 7.7 Flutter 的 assets 声明不递归子目录
+
+`pubspec.yaml` 里声明的目录**只包含该目录下的直接文件**，不含子目录：
+
+```yaml
+assets:
+  - assets/images/avatars/          # 含 avatars/*.jpg
+  - assets/images/avatars/bmc/      # 子目录必须单独声明
+```
+
+漏声明的表现很隐蔽：**编译成功、APK 正常、但图片显示不出来**
+（运行时 `Unable to load asset`）。
+
+**本项目实例**：`ovoCat` 的头像在 `assets/images/avatars/bmc/ovoCat.jpg`，
+所以 `pubspec.yaml` 必须有对应的一行。上游的 `avatars/` 是平铺的、无子目录，
+升级覆盖 `pubspec.yaml` 时**极易漏掉这一行**。
+
+**验证**：
+
+```bash
+jar tf <apk> | grep avatars/bmc
+```
+
+应该看到 `assets/flutter_assets/assets/images/avatars/bmc/ovoCat.jpg`。
+

@@ -181,7 +181,7 @@ nslookup 设备名.你的tailnet.ts.net
 
 | 组件 | 要求 |
 | --- | --- |
-| Flutter | 3.50.1+（Dart 3.14+） |
+| Flutter | 3.50.1+（Dart 3.13+） |
 | Go | 1.24+ |
 | JDK | 17 |
 | Rust | 含 Android target |

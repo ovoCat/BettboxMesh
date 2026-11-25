@@ -133,7 +133,7 @@ dns:
 
 ---
 
-## 四、三个必须知道的陷阱
+## 四、七个必须知道的陷阱
 
 ### 1. 编译 core 必须加 `--standard`
 
@@ -158,19 +158,92 @@ dart setup.dart android --arch arm64 --out core --standard
 
 清理已移除的出站应该放在 `setupConfig` 之后的 `pruneTailscaleOutbounds()`。
 
-### 3. 新增 action 后必须重跑 build_runner
+### 3. 改枚举后必须重跑 build_runner
 
 ```bash
 dart run build_runner build --delete-conflicting-outputs
 ```
 
-否则生成的枚举映射表缺新值，运行时抛：
+只要动过 `ActionMethod` / `PageLabel` 等被 json_serializable 覆盖的枚举，
+不重新生成就会在**运行期**抛：
 
 ```
 Converting object to an encodable object failed: Instance of '_Action'
 ```
 
-这个坑踩过两次（1.19.8 和 1.19.9 各一次），升级上游后第一件事就是跑它。
+验证：`lib/models/generated/core.g.dart` 的 `_$ActionMethodEnumMap`
+应包含新增的方法名。实测踩过三次（1.19.8 / 1.19.9 / 1.20.1 各一次）。
+
+### 4. 编 APK 必须加 `APP_ENV=stable`
+
+```dart
+isPre = const String.fromEnvironment('APP_ENV') != 'stable';
+```
+
+不加有两个后果：
+
+1. 界面顶部显示 `PRE` 标记
+2. `checkForUpdate()` 里相同版本也会提示更新
+   （`hasUpdate = compared > 0 || (compared == 0 && isPreRelease)`）
+
+### 5. 注入型配置必须走 `setupConfig`
+
+core 有两条配置路径，作用范围完全不同：
+
+| 路径 | 能力 |
+| --- | --- |
+| `updateClashConfig()` → `updateConfig()` | **只**改运行时字段：端口、模式、日志级别、IPv6 |
+| `restartCore()` → `setupConfig()` | 重新解析 rawConfig、重建 tunnel、注入 proxies/rules/dns |
+
+Tailscale 出站、tailnet 规则、MagicDNS、fake-ip-filter **全部只在
+`setupConfig` 里生效**。最初 Tailscale 开关错走了 `updateConfig`，导致：
+「首次填 Key 开启无效，必须重启 App」「关闭开关但旧出站没移除」。
+
+**新增任何「注入型」配置时，务必确认它走 setupConfig。**
+
+### 6. Rust 组件编译失败时 `flutter build apk` 仍返回 0
+
+`plugins/code_forge`（脚本编辑器）通过 cargokit 编译 Rust。它失败时
+**不会让 Flutter 构建失败**——退出码仍是 0，但 APK 里缺少
+`libcode_forge.so`，装到设备上打开脚本编辑器会崩溃。
+
+常见原因是 `LIBCLANG_PATH` 未设置（rquickjs 的 bindgen 需要它）。
+
+**每次出包后必做检查**：
+
+```bash
+jar tf <apk> | grep libcode_forge   # 必须有输出
+```
+
+缺 `libcode_forge.so` 的包比正常包小约 1.25 MB。这个陷阱最危险的地方是
+**没有任何报错中断构建**，只看退出码会漏掉。
+
+---
+
+### 7. Flutter 的 assets 声明不递归子目录
+
+`pubspec.yaml` 里声明的目录**只包含该目录下的直接文件**，不含子目录：
+
+```yaml
+assets:
+  - assets/images/avatars/          # 含 avatars/*.jpg
+  - assets/images/avatars/bmc/      # 子目录必须单独声明
+```
+
+漏声明的表现很隐蔽：**编译成功、APK 正常、但图片显示不出来**
+（运行时 `Unable to load asset`）。
+
+**本项目实例**：`ovoCat` 的头像在 `assets/images/avatars/bmc/ovoCat.jpg`，
+所以 `pubspec.yaml` 必须有对应的一行。上游的 `avatars/` 是平铺的、无子目录，
+升级覆盖 `pubspec.yaml` 时**极易漏掉这一行**。
+
+**验证**：
+
+```bash
+jar tf <apk> | grep avatars/bmc
+```
+
+应该看到 `assets/flutter_assets/assets/images/avatars/bmc/ovoCat.jpg`。
 
 ---
 
@@ -207,7 +280,7 @@ OAuth 凭证必须真正拿到 auth-url 并完成授权后才有标记。
 
 ### 环境要求
 
-- Flutter 3.50.1+（Dart 3.14+）
+- Flutter 3.50.1+（Dart 3.13+；1.20.1 起下限放宽到 3.13.0，实测 3.14.0 编译通过）
 - Go 1.24+
 - JDK 17
 - Rust（core 里有 Rust 组件）
@@ -387,6 +460,26 @@ vendored mihomo 补丁（中等风险）
 ```
 
 ---
+
+### 升级时 README 类文件同样会被覆盖
+
+**1.20.1 升级踩过**：`README.md` 和 `readme/` 目录被当作纯上游文件覆盖，
+丢掉了标题（`BettboxMesh` → `Bettbox`）、「相对上游的差异」章节、「文档索引」
+章节、项目热度指向（`ovoCat/BettboxMesh` → 上游），以及被删的多语言版本。
+
+这类文件**不会引起编译错误**，所以最容易被忽略。
+
+升级后必查：
+
+```bash
+Select-String -Path README.md -Pattern "BettboxMesh|Tailscale"   # 应全部命中
+Get-ChildItem readme                                              # 应只剩 en + png
+```
+
+恢复：历史里一定有提交前的版本，`git show <commit>:README.md > README.md`。
+
+---
+
 
 ## 十、贡献时请注意
 

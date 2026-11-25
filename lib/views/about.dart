@@ -184,7 +184,10 @@ class AboutView extends StatelessWidget {
 
   List<Widget> _buildMeshContributorsSection() {
     final contributors = [
-      const Contributor(avatar: 'assets/images/icon.png', name: 'ovoCat'),
+      const Contributor(
+        avatar: 'assets/images/avatars/bmc/ovoCat.jpg',
+        name: 'ovoCat',
+      ),
     ]..shuffle();
     return generateSection(
       separated: false,
