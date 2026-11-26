@@ -269,6 +269,7 @@
   "checkUpdateError": "最新バージョンを使用中です",
   "goDownload": "ダウンロードへ",
   "viewChangelog": "更新履歴を見る",
+  "viewReleases": "リリースを見る",
   "unknown": "不明",
   "geoData": "Geoデータ",
   "externalResources": "外部リソース",

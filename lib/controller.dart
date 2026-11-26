@@ -2020,13 +2020,24 @@ class AppController {
   }) async {
     if (data == null) {
       if (handleError) {
-        unawaited(
-          globalState.showMessage(
-            title: appLocalizations.checkUpdate,
-            message: TextSpan(text: appLocalizations.checkUpdateError),
-            cancelable: false,
-          ),
+        // checkForUpdate() 返回 null 有两种含义：已是最新版，或请求本身失败
+        // （网络错误、仓库 404 都被 catch 成 null）。这里不区分，文案沿用
+        // checkUpdateError（实际内容是「已是最新版」）。
+        //
+        // 附带一个 Releases 入口：万一确实是请求失败，用户能自己点开确认；
+        // 已是最新版时也能顺手核对。链接跟随 repository 常量，与更新检查
+        // 指向同一个仓库。
+        final res = await globalState.showMessage(
+          title: appLocalizations.checkUpdate,
+          message: TextSpan(text: appLocalizations.checkUpdateError),
+          confirmText: appLocalizations.confirm,
+          cancelText: appLocalizations.viewReleases,
         );
+        if (res == false) {
+          unawaited(
+            globalState.openUrl('https://github.com/$repository/releases'),
+          );
+        }
       }
       return;
     }

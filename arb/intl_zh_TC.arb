@@ -269,6 +269,7 @@
   "checkUpdateError": "目前的應用程式已經是最新版了",
   "goDownload": "前往下載",
   "viewChangelog": "查看更新日誌",
+  "viewReleases": "查看 Releases",
   "unknown": "未知",
   "geoData": "地理資料",
   "externalResources": "外部資源",

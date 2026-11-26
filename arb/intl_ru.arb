@@ -269,6 +269,7 @@
   "checkUpdateError": "Установлена последняя версия",
   "goDownload": "Перейти к загрузке",
   "viewChangelog": "Список изменений",
+  "viewReleases": "Список релизов",
   "unknown": "Неизвестно",
   "geoData": "Геоданные",
   "externalResources": "Внешние ресурсы",

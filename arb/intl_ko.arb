@@ -269,6 +269,7 @@
   "checkUpdateError": "현재 최신 버전을 사용 중입니다",
   "goDownload": "다운로드 이동",
   "viewChangelog": "업데이트 내역 보기",
+  "viewReleases": "릴리스 보기",
   "unknown": "알 수 없음",
   "geoData": "Geo 데이터",
   "externalResources": "외부 리소스",

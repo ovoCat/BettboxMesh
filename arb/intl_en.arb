@@ -269,6 +269,7 @@
   "checkUpdateError": "Already on the latest version",
   "goDownload": "Download Now",
   "viewChangelog": "View Changelog",
+  "viewReleases": "View Releases",
   "unknown": "Unknown",
   "geoData": "GeoData",
   "externalResources": "External Resources",
