@@ -461,6 +461,30 @@ vendored mihomo 补丁（中等风险）
 
 ---
 
+### 升级后必查：repository 与 assetName 会静默回退
+
+1.20.1 升级时这两处被上游覆盖，**不产生编译错误**，只在功能层面失效：
+
+```dart
+// lib/common/constant.dart —— 检查更新的仓库地址
+const repository = 'ovoCat/BettboxMesh';   // 必须是这个，不能是 appshubcc/Bettbox
+
+// lib/common/updater.dart —— 下载 asset 名前缀
+return '${AppIdentity.productName}-$version-$_assetSuffix';  // 跟随 productName
+```
+
+**后果**：检查更新会拉上游的 Release，提示用户下载官方 Bettbox，
+永远收不到本项目的更新。所有 1.20.1 的 APK 都中招。
+
+升级后自查：
+
+```bash
+Select-String -Path lib/common/constant.dart -Pattern "const repository"
+Select-String -Path lib/common/updater.dart -Pattern "return.*assetSuffix"
+```
+
+---
+
 ### 升级时 README 类文件同样会被覆盖
 
 **1.20.1 升级踩过**：`README.md` 和 `readme/` 目录被当作纯上游文件覆盖，

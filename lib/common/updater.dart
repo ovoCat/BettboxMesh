@@ -59,7 +59,7 @@ open "\$3"
 
   String assetName(String tagName) {
     final version = tagName.startsWith('v') ? tagName.substring(1) : tagName;
-    return 'Bettbox-$version-$_assetSuffix';
+    return '${AppIdentity.productName}-$version-$_assetSuffix';
   }
 
   String _url(String tagName, String name) =>

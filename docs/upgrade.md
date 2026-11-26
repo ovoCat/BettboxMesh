@@ -121,6 +121,8 @@ lib/views/about.dart           定制（双气泡墙）
 android/app/build.gradle.kts   定制（applicationId）
 res/values*/strings.xml        定制（显示名）
 lib/common/dav_client.dart     定制（WebDAV 备份目录固定为 /Bettbox，不跟随 appName）
+lib/common/constant.dart       定制（repository 指向 ovoCat/BettboxMesh）
+lib/common/updater.dart        定制（assetName 前缀跟随 productName）
 ```
 
 **恢复方法**（历史里一定有提交前的版本）：
@@ -142,6 +144,50 @@ Select-String -Path README.md -Pattern "BettboxMesh|Tailscale"
 # readme/ 应只剩两个文件
 Get-ChildItem readme
 ```
+
+### 2.6 两处静默回退：repository 与 assetName
+
+**1.20.1 升级时踩过**，和 README 是同一批问题 —— 它们都**不会引起编译错误**，
+只在功能层面静默失效。
+
+```dart
+// lib/common/constant.dart
+- const repository = 'ovoCat/BettboxMesh';      // 我们的
++ const repository = 'appshubcc/Bettbox';       // 上游覆盖后
+
+// lib/common/updater.dart
+- return '${AppIdentity.productName}-$version-$_assetSuffix';
++ return 'Bettbox-$version-$_assetSuffix';
+```
+
+**后果**：App 的「检查更新」会去拉**上游仓库**的 Release，提示用户下载
+官方 Bettbox。因为包名不同（`com.appshub.bettbox` vs `...mesh`），装上
+不会覆盖，但用户会困惑，而且永远收不到本项目的更新。
+
+这个 bug 影响**所有 1.20.1 的 APK**，装到设备上才会发现。
+
+**升级后必查这两处**：
+
+```bash
+# 1. repository 必须指向本仓库
+Select-String -Path lib/common/constant.dart -Pattern "const repository"
+# 期望: const repository = 'ovoCat/BettboxMesh';
+
+# 2. assetName 必须跟随 productName
+Select-String -Path lib/common/updater.dart -Pattern "return.*assetSuffix"
+# 期望: return '${AppIdentity.productName}-$version-$_assetSuffix';
+
+# 3. 最可靠：直接查编出来的 APK
+jar tf <apk> > /dev/null  # 先确认 APK 存在
+# 解开 libapp.so 搜字符串
+# 应含 github.com/ovoCat/BettboxMesh/releases，不含作为更新源的上游地址
+```
+
+**为什么容易漏**：这两处改动只有几行，藏在 `constant.dart` 和 `updater.dart`
+这两个「看起来像上游文件」的模块里。升级时如果整文件接受上游版本，就丢了。
+
+**判断原则**：凡是**影响运行时行为**的常量（仓库地址、路径、开关），都不属于
+「可以直接接受上游」的范畴 —— 这类文件宁可保留本地版本、手工合并上游新代码。
 
 ---
 

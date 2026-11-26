@@ -49,7 +49,10 @@ const customDashboardTitleKey = 'custom_dashboard_title';
 const lastManagedScriptVersionKey = 'last_managed_script_version';
 const restartAutoStartKey = 'restart_auto_start';
 const double dialogCommonWidth = 300;
-const repository = 'appshubcc/Bettbox';
+// 更新检查用的仓库（owner/repo）。
+// 注意：升级上游时这个值会被覆盖回 appshubcc/Bettbox，必须改回来。
+// 判断方法：App 的检查更新应该指向本仓库的 Release，不是上游的。
+const repository = 'ovoCat/BettboxMesh';
 const ipInfoToken = String.fromEnvironment('IPINFO_TOKEN', defaultValue: '');
 const defaultExternalControllerPort = 9090;
 const maxMobileWidth = 600;
