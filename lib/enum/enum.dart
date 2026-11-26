@@ -534,7 +534,7 @@ enum PageLabel {
   script,
   toolbox,
   connections,
-  tailscale,
+  mesh,
 }
 
 extension PageLabelExtension on PageLabel {
@@ -558,8 +558,8 @@ extension PageLabelExtension on PageLabel {
         return appLocalizations.toolbox;
       case PageLabel.connections:
         return appLocalizations.navConnections;
-      case PageLabel.tailscale:
-        return 'Tailscale';
+      case PageLabel.mesh:
+        return 'Mesh';
     }
   }
 }

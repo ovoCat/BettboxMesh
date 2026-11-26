@@ -28,13 +28,15 @@ dns:
 func TestPatchTailscaleInjectsProxyRulesAndDNS(t *testing.T) {
 	raw := parsePatchProfile(t, tailscalePatchProfile)
 	params := patchParams(t, `{
-	  "tailscale": {
-	    "enable": true,
-	    "name": "TS",
-	    "auth-key": "tskey-auth-xxx",
-	    "hostname": "phone",
-	    "route-rules": true,
-	    "magic-dns": true
+	  "mesh": {
+	    "tailscale": [{
+	      "enable": true,
+	      "name": "TS",
+	      "auth-key": "tskey-auth-xxx",
+	      "hostname": "phone",
+	      "route-rules": true,
+	      "magic-dns": true
+	    }]
 	  }
 	}`)
 
@@ -93,7 +95,7 @@ func TestPatchTailscaleInjectsProxyRulesAndDNS(t *testing.T) {
 func TestPatchTailscaleIgnoresLegacyDialerProxy(t *testing.T) {
 	raw := parsePatchProfile(t, tailscalePatchProfile)
 	// 旧配置里可能还留着 dialer-proxy，必须被忽略而不是注入
-	params := patchParams(t, `{"tailscale": {"enable": true, "name": "TS", "route-rules": true, "dialer-proxy": "Proxy"}}`)
+	params := patchParams(t, `{"mesh": {"tailscale": [{"enable": true, "name": "TS", "route-rules": true, "dialer-proxy": "Proxy"}]}}`)
 
 	if _, err := applyPatch(raw, params); err != nil {
 		t.Fatalf("applyPatch: %v", err)
@@ -113,7 +115,7 @@ func TestPatchTailscaleIgnoresLegacyDialerProxy(t *testing.T) {
 
 func TestPatchTailscaleDisabledKeepsConfig(t *testing.T) {
 	raw := parsePatchProfile(t, tailscalePatchProfile)
-	params := patchParams(t, `{"tailscale": {"enable": false, "name": "TS"}}`)
+	params := patchParams(t, `{"mesh": {"tailscale": [{"enable": false, "name": "TS"}]}}`)
 
 	if _, err := applyPatch(raw, params); err != nil {
 		t.Fatalf("applyPatch: %v", err)
@@ -138,7 +140,7 @@ proxies:
 rules:
   - MATCH,DIRECT
 `)
-	params := patchParams(t, `{"tailscale": {"enable": true, "name": "TS", "route-rules": true}}`)
+	params := patchParams(t, `{"mesh": {"tailscale": [{"enable": true, "name": "TS", "route-rules": true}]}}`)
 
 	if _, err := applyPatch(raw, params); err != nil {
 		t.Fatalf("applyPatch: %v", err)
@@ -156,13 +158,13 @@ rules:
 
 func TestPatchTailscaleDNSSuffix(t *testing.T) {
 	raw := parsePatchProfile(t, tailscalePatchProfile)
-	params := patchParams(t, `{"tailscale": {
+	params := patchParams(t, `{"mesh": {"tailscale": [{
 	  "enable": true,
 	  "name": "TS",
 	  "route-rules": true,
 	  "magic-dns": true,
 	  "dns-suffix": "Tailnet.Example.com."
-	}}`)
+	}]}}`)
 
 	if _, err := applyPatch(raw, params); err != nil {
 		t.Fatalf("applyPatch: %v", err)
@@ -177,7 +179,7 @@ func TestPatchTailscaleDNSSuffix(t *testing.T) {
 
 func TestPatchTailscaleFakeIPFilter(t *testing.T) {
 	raw := parsePatchProfile(t, tailscalePatchProfile)
-	params := patchParams(t, `{"tailscale": {"enable": true, "name": "TS"}}`)
+	params := patchParams(t, `{"mesh": {"tailscale": [{"enable": true, "name": "TS"}]}}`)
 
 	if _, err := applyPatch(raw, params); err != nil {
 		t.Fatalf("applyPatch: %v", err)
@@ -207,11 +209,11 @@ func TestPatchTailscaleFakeIPFilter(t *testing.T) {
 
 func TestPatchTailscaleFakeIPFilterHeadscale(t *testing.T) {
 	raw := parsePatchProfile(t, tailscalePatchProfile)
-	params := patchParams(t, `{"tailscale": {
+	params := patchParams(t, `{"mesh": {"tailscale": [{
 	  "enable": true,
 	  "name": "TS",
 	  "control-url": "https://headscale.example.com:8443"
-	}}`)
+	}]}}`)
 
 	if _, err := applyPatch(raw, params); err != nil {
 		t.Fatalf("applyPatch: %v", err)
@@ -232,7 +234,7 @@ func TestPatchTailscaleFakeIPFilterNoDuplicate(t *testing.T) {
 	raw := parsePatchProfile(t, tailscalePatchProfile)
 	// 预置一个同名条目，确认不会重复追加
 	raw.DNS.FakeIPFilter = append(raw.DNS.FakeIPFilter, "controlplane.tailscale.com")
-	params := patchParams(t, `{"tailscale": {"enable": true, "name": "TS"}}`)
+	params := patchParams(t, `{"mesh": {"tailscale": [{"enable": true, "name": "TS"}]}}`)
 
 	if _, err := applyPatch(raw, params); err != nil {
 		t.Fatalf("applyPatch: %v", err)
@@ -246,6 +248,35 @@ func TestPatchTailscaleFakeIPFilterNoDuplicate(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("controlplane.tailscale.com should appear once, got %d", count)
+	}
+}
+
+func TestPatchMeshMultipleTailscale(t *testing.T) {
+	raw := parsePatchProfile(t, tailscalePatchProfile)
+	params := patchParams(t, `{
+	  "mesh": {
+	    "tailscale": [
+	      {"enable": true, "name": "TS-Work", "state-dir": "ts_work"},
+	      {"enable": false, "name": "TS-Disabled", "state-dir": "ts_off"},
+	      {"enable": true, "name": "TS-Home", "state-dir": "ts_home"}
+	    ]
+	  }
+	}`)
+
+	if _, err := applyPatch(raw, params); err != nil {
+		t.Fatalf("applyPatch: %v", err)
+	}
+	if len(raw.Proxy) != 3 {
+		t.Fatalf("expected 3 proxies (2 enabled tailscale + NodeA), got %d", len(raw.Proxy))
+	}
+	names := map[string]bool{}
+	for _, proxy := range raw.Proxy {
+		if name, ok := proxy["name"].(string); ok {
+			names[name] = true
+		}
+	}
+	if !names["TS-Work"] || !names["TS-Home"] || names["TS-Disabled"] {
+		t.Fatalf("unexpected injected proxies: %v", names)
 	}
 }
 

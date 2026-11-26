@@ -6,7 +6,6 @@ import 'package:bett_box/state.dart';
 import 'package:bett_box/views/config/general.dart';
 import 'package:bett_box/views/config/network.dart';
 import 'package:bett_box/views/config/ntp.dart';
-import 'package:bett_box/views/config/tailscale.dart';
 import 'package:bett_box/views/config/sniffer.dart';
 import 'package:bett_box/views/config/tunnel.dart';
 import 'package:bett_box/views/config/experimental.dart';
@@ -76,16 +75,6 @@ class _ConfigViewState extends State<ConfigView> {
             ),
           ],
           builder: (_) => const NetworkListView(),
-        ),
-      ),
-      ListItem.next(
-        title: const Text('Tailscale'),
-        subtitle: Text(appLocalizations.intranetIP),
-        leading: const AppIcon(Icons.hub_outlined),
-        delegate: NextDelegate(
-          title: 'Tailscale',
-          builder: (_) => const TailscaleListView(),
-          blur: false,
         ),
       ),
       ListItem.next(

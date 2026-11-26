@@ -11,9 +11,17 @@ import (
 	"github.com/metacubex/mihomo/log"
 )
 
+// PatchMesh 是 Bettbox UI 中「Mesh」组网配置集合。
+//
+// 采用数组结构，支持同时连接多个组网实例（如多个 ZeroTier 网络或跨协议共存）；
+// 后续新增 ZeroTier / EasyTier 时直接在此结构体追加对应切片即可。
+type PatchMesh struct {
+	Tailscale []PatchTailscale `json:"tailscale,omitempty"`
+}
+
 // PatchTailscale 是 Bettbox UI 中「Tailscale」配置项的数据结构。
 //
-// Dart 侧把它放在 patch 参数的 tailscale 字段里下发，core 在合并
+// Dart 侧把它放在 patch 参数的 mesh.tailscale 数组里下发，core 在合并
 // 订阅配置时把它展开成：
 //
 //	proxies:
@@ -158,24 +166,44 @@ func buildTailscaleProxy(ts *PatchTailscale, name string) map[string]any {
 	return entry
 }
 
-// patchTailscale 把 Tailscale 配置注入到已经合并好的 RawConfig 里，
+// patchMesh 把 Mesh 组网配置注入到已经合并好的 RawConfig 里，
 // 返回需要插到规则最前面的规则（优先级高于订阅规则）。
-func patchTailscale(raw *config.RawConfig, params *PatchParams) []string {
-	ts := params.Tailscale
+func patchMesh(raw *config.RawConfig, params *PatchParams) []string {
+	if raw == nil || params == nil || params.Mesh == nil {
+		return nil
+	}
+	var rules []string
+	for i := range params.Mesh.Tailscale {
+		rules = append(rules, patchSingleTailscale(raw, &params.Mesh.Tailscale[i])...)
+	}
+	return rules
+}
+
+// patchSingleTailscale 把单个 Tailscale 配置注入到已经合并好的 RawConfig 里。
+func patchSingleTailscale(raw *config.RawConfig, ts *PatchTailscale) []string {
 	if raw == nil || ts == nil || !ts.Enable {
 		return nil
 	}
 
 	name := tailscaleProxyName(ts)
-	if !hasProxyNamed(raw.Proxy, name) {
-		raw.Proxy = append([]map[string]any{buildTailscaleProxy(ts, name)}, raw.Proxy...)
-	} else if !hasProxyOfType(raw.Proxy, "tailscale") {
-		// 名字被占用了，换一个不冲突的名字，避免污染用户配置。
-		name = name + " Tailscale"
-		if !hasProxyNamed(raw.Proxy, name) {
-			raw.Proxy = append([]map[string]any{buildTailscaleProxy(ts, name)}, raw.Proxy...)
+	if hasProxyNamed(raw.Proxy, name) {
+		if !hasProxyOfType(raw.Proxy, "tailscale") {
+			// 名字被非 tailscale 节点占用了，换一个不冲突的名字，避免污染用户配置。
+			name = name + " Tailscale"
+		}
+		if hasProxyNamed(raw.Proxy, name) {
+			// 多实例或用户配置已存在同名 tailscale 节点时追加序号，保证每个实例名称唯一。
+			base := name
+			for idx := 2; ; idx++ {
+				candidate := fmt.Sprintf("%s %d", base, idx)
+				if !hasProxyNamed(raw.Proxy, candidate) {
+					name = candidate
+					break
+				}
+			}
 		}
 	}
+	raw.Proxy = append([]map[string]any{buildTailscaleProxy(ts, name)}, raw.Proxy...)
 
 	var rules []string
 	if ts.RouteRules {

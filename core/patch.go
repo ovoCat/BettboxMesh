@@ -49,7 +49,7 @@ type PatchParams struct {
 	DisabledGroups     []string          `json:"disabled-groups"`
 	SelectGlobal       bool              `json:"select-global"`
 	Nodes              []PatchNode       `json:"nodes"`
-	Tailscale          *PatchTailscale   `json:"tailscale"`
+	Mesh               *PatchMesh        `json:"mesh"`
 }
 
 const defaultHealthCheckTimeout = 5000
@@ -136,9 +136,9 @@ func applyPatch(raw *config.RawConfig, params *PatchParams) (string, error) {
 
 	patchProxies(raw)
 
-	// Tailscale 出站 + tailnet 规则：必须排在订阅规则最前面，
+	// Mesh 出站 + 内网规则：必须排在订阅规则最前面，
 	// 否则 100.64.0.0/10 之类的流量会先被 GEOIP / MATCH 吃掉。
-	tailscaleRules := patchTailscale(raw, params)
+	meshRules := patchMesh(raw, params)
 
 	rules := raw.Rule
 	var overrideSlice []string
@@ -146,9 +146,9 @@ func applyPatch(raw *config.RawConfig, params *PatchParams) (string, error) {
 		overrideSlice = params.OverrideRules.Rules
 	}
 	sharedSlice := resolveSharedRules(raw, params.SharedRules)
-	if len(tailscaleRules) > 0 || len(params.PrependRules) > 0 || len(overrideSlice) > 0 || len(sharedSlice) > 0 {
-		merged := make([]string, 0, len(tailscaleRules)+len(params.PrependRules)+len(overrideSlice)+len(sharedSlice)+len(rules))
-		merged = append(merged, tailscaleRules...)
+	if len(meshRules) > 0 || len(params.PrependRules) > 0 || len(overrideSlice) > 0 || len(sharedSlice) > 0 {
+		merged := make([]string, 0, len(meshRules)+len(params.PrependRules)+len(overrideSlice)+len(sharedSlice)+len(rules))
+		merged = append(merged, meshRules...)
 		merged = append(merged, params.PrependRules...)
 		merged = append(merged, overrideSlice...)
 		merged = append(merged, sharedSlice...)

@@ -1209,15 +1209,18 @@ class GlobalState {
                 if (!entry.value) entry.key,
             ],
       'select-global': profile.selectedMap['GLOBAL'] == null,
-      // Tailscale：core 侧会把它展开成 tailscale 出站 + tailnet 规则
-      // + MagicDNS 策略，见 core/tailscale_patch.go。
+      // Mesh：core 侧会把它展开成对应的 mesh 出站（Tailscale / ZeroTier 等）
+      // + 路由规则 + DNS 策略，见 core/tailscale_patch.go。
       // 未选择任何凭证且无 auth-key 时不启动孤立节点，避免弹出无法归属的登录链接。
-      'tailscale':
-          (TailscaleConfigManager.instance.loaded &&
-              TailscaleConfigManager.instance.activeProfile == null &&
-              !tailscaleConfig.hasAuthKey)
-          ? tailscaleConfig.copyWith(enable: false).toPatchJson()
-          : tailscaleConfig.toPatchJson(),
+      'mesh': {
+        'tailscale':
+            (TailscaleConfigManager.instance.loaded &&
+                    TailscaleConfigManager.instance.activeProfile == null &&
+                    !tailscaleConfig.hasAuthKey) ||
+                !tailscaleConfig.enable
+            ? const <Map<String, dynamic>>[]
+            : [tailscaleConfig.toPatchJson()],
+      },
     };
   }
 

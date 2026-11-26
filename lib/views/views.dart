@@ -14,3 +14,4 @@ export 'resources.dart';
 export 'connection/connections.dart';
 export 'developer.dart';
 export 'icon_sets.dart';
+export 'mesh/mesh.dart';

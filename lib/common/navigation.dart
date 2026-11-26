@@ -1,7 +1,6 @@
 import 'package:bett_box/enum/enum.dart';
 import 'package:bett_box/models/models.dart';
 import 'package:bett_box/providers/providers.dart';
-import 'package:bett_box/views/config/tailscale.dart';
 import 'package:bett_box/views/views.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -72,10 +71,9 @@ class Navigation {
       ),
       NavigationItem(
         icon: const Icon(Icons.hub_outlined),
-        label: PageLabel.tailscale,
-        builder: (_) => const TailscaleListView(
-          key: GlobalObjectKey(PageLabel.tailscale),
-          asPage: true,
+        label: PageLabel.mesh,
+        builder: (_) => const MeshView(
+          key: GlobalObjectKey(PageLabel.mesh),
         ),
         description: 'intranetIP',
         modes: [NavigationItemMode.mobile, NavigationItemMode.desktop],
