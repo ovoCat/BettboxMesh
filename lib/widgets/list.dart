@@ -11,6 +11,7 @@ import 'package:flutter/rendering.dart';
 import 'card.dart';
 import 'input.dart';
 import 'scaffold.dart';
+import 'scroll.dart';
 import 'sheet.dart';
 
 class Delegate {
@@ -995,7 +996,13 @@ List<Widget> generateInfoSection({
 Widget generateListView(List<Widget> items, {bool shrinkWrap = false}) {
   return ScrollEdgeRise(
     builder: (context, rise) {
-      final bottomPadding = MediaQuery.paddingOf(context).bottom;
+      // 底部预留：导航页的悬浮导航栏覆盖在内容之上（Positioned，不占布局），
+      // 只算 MediaQuery.padding.bottom 不够 —— 那是系统手势条高度（12–24），
+      // 不含导航栏本身（84）。少了它，最后一个区块会被遮住。
+      // 设置子页面没有悬浮导航栏，沿用原来的 padding。
+      final bottomPadding = FloatingBottomBarScope.has(context)
+          ? getFloatingBottomBarReserveHeight(context)
+          : MediaQuery.paddingOf(context).bottom;
 
       final cleanItems = items.where((widget) => widget is! Divider).toList();
       if (cleanItems.isEmpty) return const SizedBox.shrink();
