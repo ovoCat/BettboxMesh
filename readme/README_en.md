@@ -43,12 +43,12 @@ Each set of credentials has its own `state-dir`; switching between them changes 
 
 
 ### First-Time Use
-1. Install the APK and import your subscription (Profiles → Add Profiles → Import from a URL or other source)
+1. Install the APK and import your subscription (Profiles → Add Profiles → Import from a URL or other source), Turn on the VPN
 2. Use the bottom navigation bar to go to **Tailscale** and toggle the switch on.
 3. There are two ways to add login credentials:
     - **Auth Key**: Tailscale Dashboard → Settings → Keys → Generate auth key
     - **Browser Authorization**: After adding the credential entry, click the “Redirect” button to complete the authorization in your browser.
-4. Return to the home page and enable the VPN; the Tailscale page should display “Running” and an `100.x` address.
+4. Return to the **Tailscale** page and wait a moment; the status card should display **“Running”** and an address in the format `100.x`.
 
 Logging: The `log-level: silent` setting in the subscription overrides the app settings. If you need to view the logs, manually go to “Kernel Configuration → General → Log Level” and change it to Debug.
 
