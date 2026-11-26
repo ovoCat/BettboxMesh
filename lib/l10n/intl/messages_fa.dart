@@ -2626,6 +2626,7 @@ class MessageLookup extends MessageLookupByLibrary {
     "viewDetailedIpData": MessageLookupByLibrary.simpleMessage(
       "مشاهده داده‌های دقیق IP",
     ),
+    "viewReleases": MessageLookupByLibrary.simpleMessage("مشاهده نسخه‌ها"),
     "vpnDesc": MessageLookupByLibrary.simpleMessage("تنظیمات مربوط به VPN"),
     "vpnEnableDesc": MessageLookupByLibrary.simpleMessage(
       "مسیریابی ترافیک با VpnService",

@@ -2707,6 +2707,7 @@ class MessageLookup extends MessageLookupByLibrary {
     "viewDetailedIpData": MessageLookupByLibrary.simpleMessage(
       "Посмотреть подробные данные IP",
     ),
+    "viewReleases": MessageLookupByLibrary.simpleMessage("Список релизов"),
     "vpnDesc": MessageLookupByLibrary.simpleMessage("Настройки VPN"),
     "vpnEnableDesc": MessageLookupByLibrary.simpleMessage(
       "Маршрутизация через VpnService",

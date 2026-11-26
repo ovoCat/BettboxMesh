@@ -2157,6 +2157,7 @@ class MessageLookup extends MessageLookupByLibrary {
     "view": MessageLookupByLibrary.simpleMessage("보기"),
     "viewChangelog": MessageLookupByLibrary.simpleMessage("업데이트 내역 보기"),
     "viewDetailedIpData": MessageLookupByLibrary.simpleMessage("상세 IP 데이터 보기"),
+    "viewReleases": MessageLookupByLibrary.simpleMessage("릴리스 보기"),
     "vpnDesc": MessageLookupByLibrary.simpleMessage("VPN 관련 설정 변경"),
     "vpnEnableDesc": MessageLookupByLibrary.simpleMessage(
       "VpnService로 시스템 트래픽 라우팅",

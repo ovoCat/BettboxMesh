@@ -1922,6 +1922,7 @@ class MessageLookup extends MessageLookupByLibrary {
     "view": MessageLookupByLibrary.simpleMessage("查看"),
     "viewChangelog": MessageLookupByLibrary.simpleMessage("查看更新日誌"),
     "viewDetailedIpData": MessageLookupByLibrary.simpleMessage("檢視詳細 IP 資料"),
+    "viewReleases": MessageLookupByLibrary.simpleMessage("查看 Releases"),
     "vpnDesc": MessageLookupByLibrary.simpleMessage("修改VPN相關設定"),
     "vpnEnableDesc": MessageLookupByLibrary.simpleMessage(
       "透過 VpnService 自動路由系統流量",

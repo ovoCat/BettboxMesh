@@ -2170,6 +2170,7 @@ class MessageLookup extends MessageLookupByLibrary {
     "view": MessageLookupByLibrary.simpleMessage("表示"),
     "viewChangelog": MessageLookupByLibrary.simpleMessage("更新履歴を見る"),
     "viewDetailedIpData": MessageLookupByLibrary.simpleMessage("詳細なIPデータを見る"),
+    "viewReleases": MessageLookupByLibrary.simpleMessage("リリースを見る"),
     "vpnDesc": MessageLookupByLibrary.simpleMessage("VPN関連の設定を変更"),
     "vpnEnableDesc": MessageLookupByLibrary.simpleMessage(
       "VpnServiceで通信をルーティング",

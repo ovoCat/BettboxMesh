@@ -2325,6 +2325,16 @@ class AppLocalizations {
     );
   }
 
+  /// `View Releases`
+  String get viewReleases {
+    return Intl.message(
+      'View Releases',
+      name: 'viewReleases',
+      desc: '',
+      args: [],
+    );
+  }
+
   /// `Unknown`
   String get unknown {
     return Intl.message('Unknown', name: 'unknown', desc: '', args: []);
