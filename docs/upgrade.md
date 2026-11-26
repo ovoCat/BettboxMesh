@@ -89,7 +89,7 @@ git add -A && git commit
 | --- | --- | --- |
 | `core/tailscale_patch.go`<br>`core/tailscale_status.go`<br>`core/tailscale_patch_test.go`<br>`lib/models/tailscale.dart`<br>`lib/views/config/tailscale.dart`<br>`docs/tailscale.md` | **纯新增** | 上游不会有同名文件，理论上零冲突。若真冲突说明上游也做了 Tailscale，停下来重新设计 |
 | `core/Clash.Meta/adapter/outbound/tailscale.go`<br>`tailscale_stub.go` | **vendored 补丁** | 保留我们的补丁，把上游新逻辑合进来。改动集中在文件尾部且是追加 |
-| `core/patch.go` `core/constant.go` `core/action.go` `core/common.go`<br>`lib/enum/enum.dart` `lib/clash/*.dart` `lib/state.dart`<br>`lib/controller.dart` `lib/common/navigation.dart` `lib/views/config/config.dart` | **接线点** | 通常自动合并。确认 Method 常量、枚举值、NavigationItem 还在原位 |
+| `core/patch.go` `core/constant.go` `core/action.go` `core/common.go`<br>`lib/enum/enum.dart` `lib/clash/*.dart` `lib/state.dart`<br>`lib/controller.dart` `lib/common/navigation.dart` `lib/views/config/config.dart`<br>`lib/common/dav_client.dart`（WebDAV 目录固定 /Bettbox） | **接线点** | 通常自动合并。确认 Method 常量、枚举值、NavigationItem 还在原位 |
 | `lib/common/constant.dart` `lib/common/print.dart`<br>`lib/manager/clash_manager.dart` `lib/views/logs.dart` `lib/main.dart` | **可选增强** | **可以直接接受上游版本**（见第 3 节），我们的功能只是暂时关闭 |
 | `lib/models/generated/*.g.dart` | **生成产物** | 不要手改，合并后重跑 `dart run build_runner build` |
 
@@ -120,6 +120,7 @@ readme/README_*.md             本项目只保留 en + zh，其余应删除
 lib/views/about.dart           定制（双气泡墙）
 android/app/build.gradle.kts   定制（applicationId）
 res/values*/strings.xml        定制（显示名）
+lib/common/dav_client.dart     定制（WebDAV 备份目录固定为 /Bettbox，不跟随 appName）
 ```
 
 **恢复方法**（历史里一定有提交前的版本）：

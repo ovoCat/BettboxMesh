@@ -54,7 +54,17 @@ class DAVClient {
     }
   }
 
-  String get root => '/$appName';
+  // WebDAV 上的备份目录。
+  //
+  // 固定用上游的名字，不跟随 appName。appName 是 'BettboxMesh'，用它会让
+  // 云端目录变成 /BettboxMesh，而从上游迁来的用户备份在 /Bettbox 下面，
+  // 两边互相看不见，得手动搬文件。
+  //
+  // 备份目录只是个存放位置，不是产品标识，没必要带品牌后缀。固定成
+  // 'Bettbox' 之后，本项目与上游可以共用一个目录 —— 代价是两者同时使用
+  // 时后备份的会覆盖先备份的（文件名相同），但备份本身带时间戳副本，
+  // 不至于丢数据。
+  String get root => '/Bettbox';
 
   String get baseName =>
       fileName.replaceAll(RegExp(r'\.zip$', caseSensitive: false), '');
