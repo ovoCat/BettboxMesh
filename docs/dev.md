@@ -505,6 +505,35 @@ Get-ChildItem readme                                              # 应只剩 en
 ---
 
 
+## 九点五、更新检查的 Releases 入口
+
+「检查更新」发现已是最新版时，弹窗除了「确定」还有一个「查看 Releases」，
+打开 `https://github.com/$repository/releases`。
+
+**为什么需要它**：`checkForUpdate()` 返回 null 有两种含义 —— 已是最新版，
+或请求本身失败（网络错误、仓库 404 都被 catch 成 null），而弹窗文案相同。
+有 Releases 入口后，用户能自己点开确认到底属于哪种情况。
+
+链接从 `repository` 常量拼接，与更新检查用同一个来源，不会各自漂移。
+
+```dart
+// lib/controller.dart — checkUpdateResultHandle 的 data == null 分支
+final res = await globalState.showMessage(
+  title: appLocalizations.checkUpdate,
+  message: TextSpan(text: appLocalizations.checkUpdateError),
+  confirmText: appLocalizations.confirm,
+  cancelText: appLocalizations.viewReleases,   // 返回 false
+);
+if (res == false) {
+  unawaited(globalState.openUrl('https://github.com/$repository/releases'));
+}
+```
+
+按钮顺序遵循 `showMessage` 的约定：`cancelText` 在左返回 `false`，
+`confirmText` 在右返回 `true`，点遮罩关闭返回 `null`。
+
+---
+
 ## 十、贡献时请注意
 
 **不要把敏感信息写进代码或文档。** 包括：
