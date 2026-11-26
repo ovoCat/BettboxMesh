@@ -16,6 +16,7 @@
 
 
 ---
+
 ## 📃 Summary
 
 * Since only one VpnService can exist on the Android system, it is not possible to use networking tools like Tailscale while the proxy software is running. BettboxMesh implements this functionality using components built into the Mihomo kernel.
@@ -24,6 +25,7 @@
 * For more information, please visit the [Bettbox](https://github.com/appshubcc/Bettbox) repository.
 
 ---
+
 ## 🛠️ Differences Relative to the Upstream
 
 ### 1. Built-in Tailscale
@@ -52,8 +54,6 @@ Each set of credentials has its own `state-dir`; switching between them changes 
 
 Logging: The `log-level: silent` setting in the subscription overrides the app settings. If you need to view the logs, manually go to “Kernel Configuration → General → Log Level” and change it to Debug.
 
-
-
 ---
 
 ### ☕ Sponsoring & Support
@@ -66,6 +66,12 @@ Logging: The `log-level: silent` setting in the subscription overrides the app s
 * Bitcoin (BTC)： <code>bc1pj8qphpkdy4rs86zxr2wwrx7svnqsn7retplsr2mkxjuqjlxej68qzn3srj</code>
 
 ---
+
+### ✈️ Telegram Channel
+**[BettboxMesh Channel](https://t.me/btmesh_channel)**
+
+---
+
 ## ❤️ Acknowledgments
 
 * **[Bettbox](https://github.com/appshubcc/Bettbox)**
@@ -75,6 +81,7 @@ Logging: The `log-level: silent` setting in the subscription overrides the app s
 * **[tailscale](https://github.com/metacubex/tailscale)**
 
 ---
+
 ## 📈 Project Popularity
 
 <p align="center">
@@ -88,6 +95,7 @@ Logging: The `log-level: silent` setting in the subscription overrides the app s
 </p>
 
 ---
+
 ## 📄 License
 
 This project is licensed under the [GPL-3.0 License](../LICENSE) 

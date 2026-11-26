@@ -52,7 +52,10 @@
 
 日志：订阅里的 `log-level: silent` 会覆盖 App 设置，需要看日志时手动到「内核配置 → 常规 → 日志等级」改成 Debug。
 
+---
 
+### ✈️ Telegram Channel
+**[BettboxMesh Channel](https://t.me/btmesh_channel)**
 
 ---
 
